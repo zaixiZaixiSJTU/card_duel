@@ -1,0 +1,33 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments and local runtimes
+.venv/
+venv/
+env/
+.uv-cache/
+.uv-python/
+
+# IDE and local assistant settings
+.idea/
+.vscode/
+.agents/
+.claude/
+
+# Builds and generated output
+build/
+dist/
+*.egg-info/
+output/
+*.log
+
+# Operating-system files
+.DS_Store
+Thumbs.db
