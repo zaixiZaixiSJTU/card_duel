@@ -34,21 +34,21 @@ SLUGCAT_CARD_SPECS = (
     SlugcatCardSpec(10, "趴下", "技能", 4, 1, "清除敏捷和动能；向其他玩家加入随机生物。"),
     SlugcatCardSpec(11, "猫会后空翻", "技能", 3, 2, "获得4点动能和2点敏捷。"),
     SlugcatCardSpec(12, "猫睡觉", "技能", 6, 1, "消耗3点饱食度，获得1点业力。"),
-    SlugcatCardSpec(13, "猫觅食", "技能", 8, 0, "按最近死亡生物生命值的五分之一获得饱食度，向上取整。"),
-    SlugcatCardSpec(14, "猫跑路了", "技能", 8, None, "清除手牌生物，并按投入能量获得见闻牌。"),
-    SlugcatCardSpec(15, "猫闯祸", "技能", 3, 2, "将1只随机生物加入自己的手牌。"),
-    SlugcatCardSpec(16, "小面条", "生物", 5, 0, "1点生命；转移后使其后续打出耗能+1，否则死亡。", True),
-    SlugcatCardSpec(17, "面条蝇", "生物", 0, None, "5点生命，造成5点伤害；每回合免疫首次攻击且不可打出。", True),
-    SlugcatCardSpec(18, "射线虫", "生物", 0, 1, "1点生命；可转移，回合结束时引来秃鹫。", True),
-    SlugcatCardSpec(19, "秃鹫", "生物", 0, 2, "15点生命；打出后造成10点伤害。", True),
-    SlugcatCardSpec(20, "绿蜥蜴", "生物", 5, 2, "10点生命；静止一回合后造成5点伤害。", True),
-    SlugcatCardSpec(21, "金蜥蜴", "生物", 0, 1, "6点生命；造成3点伤害。", True),
-    SlugcatCardSpec(22, "烈焰蜈蚣", "生物", 0, 1, "共享20点生命；三张以上时造成15点伤害。", True),
-    SlugcatCardSpec(23, "烈焰蜥蜴", "生物", 0, None, "20点生命；造成10点伤害，受攻击时反伤3，不可打出。", True),
+    SlugcatCardSpec(13, "猫觅食", "技能", 8, 0, "按最近死亡生物生命值的五分之一获得饱食度，向上取整。抽1张牌。"),
+    SlugcatCardSpec(14, "猫跑路了", "技能", 8, None, "清除手牌生物，并按投入能量获得见闻牌。抽1张牌。"),
+    SlugcatCardSpec(15, "猫闯祸", "技能", 3, 2, "将1只随机生物加入自己的手牌。抽1张牌。"),
+    SlugcatCardSpec(16, "小面条", "生物", 5, 0, "1血。0费转移到别人的手牌并耗能+1，否则死亡。死亡时加入一张面条蝇。会和手牌中的蜥蜴一起消失。", True),
+    SlugcatCardSpec(17, "面条蝇", "生物", 0, None, "5血。造成5伤害。每回合免疫1次攻击，不可打出。", True),
+    SlugcatCardSpec(18, "射线虫", "生物", 0, 1, "1血。1费转移到别人的手牌。加入一张秃鹫。", True),
+    SlugcatCardSpec(19, "秃鹫", "生物", 0, 2, "15血。场上有生物死亡或2费打出。造成10伤害。", True),
+    SlugcatCardSpec(20, "绿蜥蜴", "生物", 5, 2, "10血。静止一回合才会造成5伤。2费打出。", True),
+    SlugcatCardSpec(21, "金蜥蜴", "生物", 0, 1, "6血。造成3伤害。1费打出。", True),
+    SlugcatCardSpec(22, "烈焰蜈蚣", "生物", 0, 1, "共享20血。1费打出。存活时在目前场上烈焰蜈蚣较多的角色手牌中加入一张，每张可免伤一次。手牌中数量≥3时造成15伤害。", True),
+    SlugcatCardSpec(23, "烈焰蜥蜴", "生物", 0, None, "20血。造成10伤害，可1费避免。每次被攻击反伤3。不可打出。", True),
     SlugcatCardSpec(24, "钢秃鹫", "生物", 0, 3, "30点生命；可转移，随后造成15点伤害。", True),
     SlugcatCardSpec(25, "拾荒者", "生物", 3, None, "5点生命；随机携带物品并对持有者使用，不可打出。", True),
     SlugcatCardSpec(26, "管虫", "生物", 0, 0, "1点生命；占用手牌位置，使见闻牌耗能-1。", True),
-    SlugcatCardSpec(27, "工业郊区", "见闻", 3, 2, "加入拾荒者、射线虫、秃鹫、泡水果和矛类物品。"),
+    SlugcatCardSpec(27, "工业郊区", "见闻", 1, 2, "加入拾荒者、射线虫、秃鹫、泡水果和矛类物品。"),
     SlugcatCardSpec(28, "阴影城堡", "见闻", 0, 2, "加入拾荒者、珍珠、闪光果、炸矛和炸药。"),
     SlugcatCardSpec(29, "高墙绝壁", "见闻", 0, 2, "加入金蜥蜴、秃鹫和管虫。"),
     SlugcatCardSpec(30, "天空群岛", "见闻", 0, 2, "加入小面条、金蜥蜴、秃鹫、珍珠和炸矛。"),
@@ -70,21 +70,52 @@ SLUGCAT_CARD_SPECS = (
     SlugcatCardSpec(46, "白珍珠", "物品", 3, 0, "吸引拾荒者；对拾荒者使用时获得其携带物。"),
     SlugcatCardSpec(47, "有色珍珠", "物品", 0, 0, "吸引拾荒者；对拾荒者使用时雇佣它。"),
     SlugcatCardSpec(48, "质量稀释电池", "物品", 0, 4, "立即获得99点敏捷。"),
+    # 49/50 插入物：独立卡牌ID，完全避免与普通钢筋/电矛（1/5）以及形态卡（36-40）混淆。
+    # 仅通过插入效果加入手牌，不在任何牌堆中。耗能1拔出（参照工作簿原版描述）。
+    SlugcatCardSpec(49, "钢筋【插入】", "物品", 0, 1, "对手插入体内的钢筋。耗能1拔出，返回对方牌堆。不可弃牌。", True),
+    SlugcatCardSpec(50, "电矛【插入】", "物品", 0, 1, "插入体内的电矛。耗能1拔出，返回对方牌堆。不可弃牌。", True),
 )
 
 SLUGCAT_SPECS_BY_ID = {spec.card_id: spec for spec in SLUGCAT_CARD_SPECS}
 
-# Direct draws contain skills only. Other card types enter through discoveries
-# and card effects as specified by the workbook.
+# 初始牌组直接从 source_count 生成：source_count > 0 的牌一开始就在牌堆中，
+# source_count == 0 的牌需要通过见闻解锁后才加入。
+# 排除规则：
+#   - 生物牌（16-26）不进入初始牌堆——仅通过见闻解锁或卡牌效果加入。
+#   - 插入物（49-50）永不进入初始/返回牌堆/抽牌堆——仅通过插入效果临时加入手牌。
 SLUGCAT_INITIAL_DECK_COUNTS = {
-    card_id: SLUGCAT_SPECS_BY_ID[card_id].source_count
-    for card_id in range(6, 16)
+    spec.card_id: spec.source_count
+    for spec in SLUGCAT_CARD_SPECS
+    if spec.source_count > 0
+    and not (16 <= spec.card_id <= 26)
+    and spec.card_id not in (49, 50)
 }
 
 SLUGCAT_CREATURE_IDS = tuple(range(16, 27))
+SLUGCAT_INSERTED_IDS = (49, 50)  # 插入的钢筋/电矛，独立ID不与普通1/5或形态卡36-40混淆
 SLUGCAT_DISCOVERY_IDS = tuple(range(27, 36))
 SLUGCAT_FORM_IDS = tuple(range(36, 41))
-SLUGCAT_ATTACK_ITEM_IDS = (1, 2, 3, 4, 5)
+SLUGCAT_ATTACK_ITEM_IDS = (1, 2, 3, 4, 5)  # 普通攻击物品，不包含插入版本
+# 不可弃的卡牌：生物（16-26）+ 插入物（49-50）
+SLUGCAT_NO_DISCARD_IDS = tuple(range(16, 27)) + SLUGCAT_INSERTED_IDS
+
+# Base health for each creature type (per workbook).
+CREATURE_BASE_HEALTH = {
+    16: 1,   # 小面条
+    17: 5,   # 面条蝇
+    18: 1,   # 射线虫
+    19: 15,  # 秃鹫
+    20: 10,  # 绿蜥蜴
+    21: 6,   # 金蜥蜴
+    22: 20,  # 烈焰蜈蚣（共享）
+    23: 20,  # 烈焰蜥蜴
+    24: 30,  # 钢秃鹫
+    25: 5,   # 拾荒者
+    26: 1,   # 管虫
+}
+
+# Lizard IDs that eat noodles (per workbook: 小面条会和蜥蜴一起消失).
+LIZARD_IDS = (20, 21)
 
 DISCOVERY_CONTENTS = {
     27: {25: 5, 18: 3, 19: 1, 45: 5, 3: 1, 4: 1, 5: 1},

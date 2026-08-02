@@ -100,13 +100,29 @@ def get_card_counts(character_id):
     return CARD_COUNTS_BY_CHARACTER[character_id].copy()
 
 
+_FALLBACK_DEFINITION = CardDefinition(
+    character_id=0,
+    card_id=0,
+    name="未知卡牌",
+    handler=combat.play_unavailable_card,
+    exhausted=True,
+    card_type="其他",
+    cost=None,
+    description="此卡牌无法被打出。",
+)
+
+
 def get_card_definition(character_id, card_id):
-    try:
-        return CARD_REGISTRY[(character_id, card_id)]
-    except KeyError as error:
-        raise KeyError(
-            f"角色 {character_id} 未注册卡牌 {card_id}"
-        ) from error
+    """Return the card definition, or a fallback for unregistered cards.
+
+    Creature cards from the Slugcat character can end up in other players'
+    hands (via transfers / insertions).  Returning a fallback instead of
+    raising ``KeyError`` lets the UI display them and prevents crashes when
+    the player tries to interact with them.
+    """
+    return CARD_REGISTRY.get(
+        (character_id, card_id), _FALLBACK_DEFINITION
+    )
 
 
 def get_character_card_catalog(character_id):

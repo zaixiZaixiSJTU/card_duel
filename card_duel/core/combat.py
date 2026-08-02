@@ -17,7 +17,6 @@ from card_duel.core.characters import CHARACTER_NAMES
 # Constants
 # ============================================================
 IMAGE_SIZE = (120, 180)
-BUTTON_PAD = (5, 8)
 CHARACTERS = ["未选择", *(CHARACTER_NAMES[index] for index in sorted(CHARACTER_NAMES))]
 
 # ============================================================
@@ -92,6 +91,7 @@ class NetworkGameState:
         self.timeline = []
         self.character_ids = {1: None, 2: None}
         self.card_images = []
+        self.peer_card_images = []
         self.window = None
         self.connection = None
         self.game_over = False
@@ -100,6 +100,17 @@ class NetworkGameState:
         self.round_number = 0
         self.active_player_id = None
         self.current_phase = None
+        # Unified card-click interaction state.
+        self.pending_arm_index = None
+        self.card_selection_callback = None
+        self.selection_mode_name = ""
+        # Previous numeric values for change-flash feedback.
+        self._prev_values = {1: {}, 2: {}}
+        # Cached thumbnails for played-card slots.
+        self._local_slot_thumbs = {}
+        self._peer_slot_thumbs = {}
+        # Optional open deck-viewer window.
+        self.deck_viewer_window = None
 
     @property
     def local_player(self):
@@ -306,7 +317,7 @@ def update_defence_totals(game_state):
         )
 
 
-def apply_damage(game_state, damage, target_player_id):
+def apply_damage(game_state, damage, target_player_id, announce=None):
     target = game_state.players[target_player_id]
     if target.special.get("immune_next_attack", 0):
         target.special["immune_next_attack"] -= 1
@@ -321,23 +332,46 @@ def apply_damage(game_state, damage, target_player_id):
             break
         if defence_effects[0].amount == 0:
             defence_effects.pop(0)
-    return lose_life(game_state, damage, target_player_id)
+    return lose_life(game_state, damage, target_player_id, announce=announce)
 
 
-def lose_life(game_state, amount, target_player_id):
-    """Lose life without defence; Slugcat agility still prevents life loss."""
+def lose_life(game_state, amount, target_player_id, announce=None):
+    """Lose life without defence; Slugcat agility/centipede still prevents life loss."""
     target = game_state.players[target_player_id]
     amount = max(0, amount)
     if game_state.character_ids.get(target_player_id) == 4:
+        # 烈焰蜈蚣免伤
+        from card_duel.cards.slugcat import check_centipede_immunity
+
+        amount = check_centipede_immunity(
+            game_state, target_player_id, amount, announce=announce
+        )
         agility = int(target.special.get("agility", 0))
-        prevented = min(agility, amount)
-        target.special["agility"] = agility - prevented
-        amount -= prevented
+        if agility > 0:
+            # 敏捷格挡伤害，但只在实际扣血时才消耗等量敏捷。
+            # 2敏捷防2伤 → 0扣血 → 敏捷不变；2敏捷防3伤 → 扣1血 → 敏捷-1。
+            blocked = min(agility, amount)
+            amount -= blocked
+            life_lost = amount  # 溢出部分=实际扣血
+            agility_loss = min(agility, life_lost)
+            if agility_loss > 0:
+                target.special["agility"] = agility - agility_loss
+                if announce:
+                    announce(
+                        f"玩家{target_player_id}的敏捷减伤{blocked}点"
+                        f"（扣血{life_lost}，敏捷-{agility_loss}，"
+                        f"剩余{target.special['agility']}）"
+                    )
+            elif blocked > 0 and announce:
+                announce(
+                    f"玩家{target_player_id}的敏捷完全格挡{blocked}点伤害"
+                    f"（敏捷不消耗，仍为{agility}）"
+                )
     target.health -= amount
     if game_state.character_ids.get(target_player_id) == 4 and target.health <= 0:
         from card_duel.cards.slugcat import resolve_slugcat_karma
 
-        resolve_slugcat_karma(game_state, target_player_id)
+        resolve_slugcat_karma(game_state, target_player_id, announce=announce)
     return amount
 
 
@@ -363,8 +397,14 @@ def resolve_scheduled_event(game_state, scheduled_event, announce):
             if target.defence >= scheduled_event.amount:
                 target.defence -= scheduled_event.amount
             else:
-                target.health -= scheduled_event.amount - target.defence
+                raw_damage = scheduled_event.amount - target.defence
                 target.defence = 0
+                lose_life(
+                    game_state,
+                    raw_damage,
+                    scheduled_event.target_player_id,
+                    announce=announce,
+                )
         elif scheduled_event.effect_type == 2:
             target.energy += scheduled_event.amount
         elif scheduled_event.effect_type == 3:
@@ -420,11 +460,23 @@ def add_card_to_hand(game_state, card_id):
 
 
 def draw_cards(game_state, amount):
-    for _ in range(amount):
-        if not game_state.draw_pile:
+    from card_duel.cards.slugcat_data import SLUGCAT_CREATURE_IDS
+
+    drawn = 0
+    skipped = []
+    while drawn < amount and game_state.draw_pile:
+        card_id = game_state.draw_pile.pop(0)
+        if card_id in SLUGCAT_CREATURE_IDS:
+            # 生物牌可在牌堆中但不会被主动抽取
+            skipped.append(card_id)
+            continue
+        if add_card_to_hand(game_state, card_id):
+            drawn += 1
+        else:
+            game_state.draw_pile.insert(0, card_id)
             break
-        if not add_card_to_hand(game_state, game_state.draw_pile.pop(0)):
-            break
+    # 跳过的生物牌放回牌堆底部
+    game_state.draw_pile.extend(skipped)
 
 
 # ============================================================
@@ -434,6 +486,55 @@ def _get_add_defence(game_state, player_id):
     return lambda amount, turns=1: add_defence(
         game_state.defences[player_id], amount, turns
     )
+
+
+def resolve_attack_target(game_state, target_player_id, damage, announce=None, attacker_id=None):
+    """Generic target resolution for Warrior (or any) attack cards.
+
+    If the opponent is a Slugcat with creatures on board, prompts the
+    attacker to pick between the player itself, hand creatures, and threat
+    creatures.  Returns the amount of HP actually lost by the final target.
+
+    Any target creature damage / death effects are handled by delegating back
+    to the Slugcat module (only relevant when target is a Slugcat player).
+    """
+    # Prompt for target when either side is a Slugcat (creatures may live in
+    # either player's hand / threat zone).
+    source_is_slugcat = game_state.character_ids.get(attacker_id) == 4
+    target_is_slugcat = game_state.character_ids.get(target_player_id) == 4
+    target_obj = None
+    if source_is_slugcat or target_is_slugcat:
+        from card_duel.cards.slugcat import (
+            choose_attack_target,
+            _damage_hand_creature,
+            _damage_threat_creature,
+        )
+
+        target_obj = choose_attack_target(game_state, attacker_id, target_player_id, announce)
+        if target_obj is not None and target_obj["type"] != "player":
+            creature_owner = target_obj.get("player_id", target_player_id)
+            if target_obj["type"] == "hand":
+                _damage_hand_creature(
+                    game_state, creature_owner, target_obj["card_id"],
+                    damage, announce, attacker_id=attacker_id,
+                )
+            else:
+                threats = game_state.players[creature_owner].special.get(
+                    "creature_threats", []
+                )
+                idx = next(
+                    (i for i, t in enumerate(threats)
+                     if int(t["card_id"]) == target_obj["card_id"]),
+                    -1,
+                )
+                if idx >= 0:
+                    _damage_threat_creature(
+                        game_state, creature_owner, idx, damage, announce,
+                        attacker_id=attacker_id,
+                    )
+            return 0
+    # Fall-through: attack the player directly.
+    return apply_damage(game_state, damage, target_player_id, announce=announce)
 
 
 def _show_insufficient_energy():
@@ -447,16 +548,21 @@ def _show_insufficient_energy():
 
 
 def play_unavailable_card(game_state, source_player_id, target_player_id, announce, ignore_cost=0):
-    print('这张牌已经打出了！')
+    from card_duel.ui.network import colored_announce
+    colored_announce(game_state, '这张牌已经打出了！')
     return 0
 
 
 def play_attack_card(game_state, source_player_id, target_player_id, announce, ignore_cost=0):
     """攻 - Attack (cost 1)"""
     if game_state.players[source_player_id].energy >= 1 or ignore_cost == 1:
-        announce(f'玩家{source_player_id}使用了攻(造成{2 + game_state.players[source_player_id].strength}伤害)')
+        damage = 2 + game_state.players[source_player_id].strength
+        announce(f'玩家{source_player_id}使用了攻(造成{damage}伤害)')
         game_state.players[source_player_id].energy -= 1
-        apply_damage(game_state, 2 + game_state.players[source_player_id].strength, target_player_id)
+        resolve_attack_target(
+            game_state, target_player_id, damage,
+            announce=announce, attacker_id=source_player_id,
+        )
         return 1
     else:
         _show_insufficient_energy()
@@ -478,10 +584,14 @@ def play_defend_card(game_state, source_player_id, target_player_id, announce, i
 def play_shield_bash_card(game_state, source_player_id, target_player_id, announce, ignore_cost=0):
     """盾击 - Shield Bash (cost 2)"""
     if game_state.players[source_player_id].energy >= 2 or ignore_cost == 1:
-        announce(f'玩家{source_player_id}使用了盾击(伤害{2 + game_state.players[source_player_id].strength},防御+2)')
+        damage = 2 + game_state.players[source_player_id].strength
+        announce(f'玩家{source_player_id}使用了盾击(伤害{damage},防御+2)')
         game_state.players[source_player_id].energy -= 2
         _get_add_defence(game_state, source_player_id)(2)
-        apply_damage(game_state, 2 + game_state.players[source_player_id].strength, target_player_id)
+        resolve_attack_target(
+            game_state, target_player_id, damage,
+            announce=announce, attacker_id=source_player_id,
+        )
         return 1
     else:
         _show_insufficient_energy()
@@ -491,18 +601,18 @@ def play_shield_bash_card(game_state, source_player_id, target_player_id, announ
 def play_pack_god_card(game_state, source_player_id, target_player_id, announce, ignore_cost=0):
     """背包之神 - Pack God (cost 0)"""
     if game_state.players[source_player_id].energy >= 0 or ignore_cost == 1:
-        discard_count = _choose_discard_count(
-            "背包之神 - 选择弃牌", game_state.hand_size
-        )
-        if discard_count is None:
+        from card_duel.network.gameplay import select_hand_cards_in_place
+        from card_duel.ui.network import refresh_cards as _refresh_hand
+
+        selected = select_hand_cards_in_place(game_state, "背包之神", exclude_id=4)
+        if selected is None:
             return 0
-        if not _discard_selected_cards(
-            game_state,
-            "背包之神 - 弃牌",
-            discard_count,
-            exclude_id=4,
-        ):
-            return 0
+        for hand_index in selected:
+            game_state.draw_pile.append(game_state.hand_cards[hand_index])
+            game_state.hand_cards[hand_index] = -1
+        _refresh_hand(game_state)
+
+        discard_count = len(selected)
         announce(
             f'玩家{source_player_id}召唤了背包之神'
             f'(弃{discard_count}牌得{discard_count - 1}能量)'
@@ -533,7 +643,10 @@ def play_heavy_sword_card(game_state, source_player_id, target_player_id, announ
         damage = 3 + 2 * game_state.players[source_player_id].strength
         announce(f'玩家{source_player_id}使用了重剑打击(造成{damage}伤害)')
         game_state.players[source_player_id].energy -= 3
-        apply_damage(game_state, damage, target_player_id)
+        resolve_attack_target(
+            game_state, target_player_id, damage,
+            announce=announce, attacker_id=source_player_id,
+        )
         return 1
     else:
         _show_insufficient_energy()
@@ -546,7 +659,10 @@ def play_heavy_hammer_card(game_state, source_player_id, target_player_id, annou
         damage = 10 + game_state.players[source_player_id].strength
         announce(f'玩家{source_player_id}使用了重锤打击(造成{damage}伤害)')
         game_state.players[source_player_id].energy -= 7
-        apply_damage(game_state, damage, target_player_id)
+        resolve_attack_target(
+            game_state, target_player_id, damage,
+            announce=announce, attacker_id=source_player_id,
+        )
         return 1
     else:
         _show_insufficient_energy()
@@ -572,7 +688,9 @@ def play_burn_card(game_state, source_player_id, target_player_id, announce, ign
             health_cost = int(values['-SLIDER-'])
         if event == "确定":
             choice_window.close()
-            game_state.players[source_player_id].health -= health_cost
+            lose_life(
+                game_state, health_cost, source_player_id, announce=announce
+            )
             game_state.players[source_player_id].strength += health_cost
             if game_state.players[source_player_id].special['sacrifice']:
                 draw_cards(game_state, health_cost * game_state.players[source_player_id].special['sacrifice'])
@@ -627,7 +745,10 @@ def play_full_body_slam_card(game_state, source_player_id, target_player_id, ann
         damage = game_state.players[source_player_id].defence + game_state.players[source_player_id].strength
         announce(f'玩家{source_player_id}使用了全身撞击(造成{damage}吨冲击)')
         game_state.players[source_player_id].energy -= 4
-        apply_damage(game_state, damage, target_player_id)
+        resolve_attack_target(
+            game_state, target_player_id, damage,
+            announce=announce, attacker_id=source_player_id,
+        )
         return 1
     else:
         _show_insufficient_energy()
@@ -688,132 +809,28 @@ def play_black_flash_card(game_state, source_player_id, target_player_id, announ
 def play_burnt_offering_card(game_state, source_player_id, target_player_id, announce, ignore_cost=0):
     """燔祭 - Burnt Offering (cost 3)"""
     if game_state.players[source_player_id].energy >= 3 or ignore_cost == 1:
-        discard_count = _choose_discard_count(
-            "燔祭 - 选择弃牌", game_state.hand_size
-        )
-        if discard_count is None:
+        from card_duel.network.gameplay import select_hand_cards_in_place
+        from card_duel.ui.network import refresh_cards as _refresh_hand
+
+        selected = select_hand_cards_in_place(game_state, "燔祭", exclude_id=16)
+        if selected is None:
             return 0
-        if not _discard_selected_cards(
-            game_state,
-            "燔祭 - 弃牌",
-            discard_count,
-            exclude_id=16,
-        ):
-            return 0
+        for hand_index in selected:
+            game_state.draw_pile.append(game_state.hand_cards[hand_index])
+            game_state.hand_cards[hand_index] = -1
+        _refresh_hand(game_state)
+
+        discard_count = len(selected)
         damage = discard_count + 2 + game_state.players[source_player_id].strength
         announce(f'玩家{source_player_id}使用了燔祭(弃{discard_count}牌造成{damage}伤)')
         game_state.players[source_player_id].energy -= 3
-        apply_damage(game_state, damage, target_player_id)
+        apply_damage(
+            game_state, damage, target_player_id, announce=announce
+        )
         return 1
     else:
         _show_insufficient_energy()
         return 0
-
-
-def _choose_discard_count(title, hand_size):
-    minimum_count = 0
-    maximum_count = max(0, hand_size - 1)
-    layout = [
-        [
-            sg.Text(
-                f"弃牌数量({minimum_count}-{maximum_count}):",
-                text_color='#6F89A8',
-                font=('Microsoft YaHei', 13, 'bold'),
-            )
-        ],
-        [
-            sg.Slider(
-                range=(minimum_count, maximum_count),
-                default_value=minimum_count,
-                orientation='h',
-                key='-SLIDER-',
-                enable_events=True,
-                size=(25, 15),
-            )
-        ],
-        [sg.Button("确定", size=(10, 1))],
-    ]
-    choice_window = sg.Window(
-        title, layout, keep_on_top=True, finalize=True
-    )
-    selected_count = 1 if maximum_count >= 1 else 0
-    while True:
-        event, values = choice_window.read()
-        if event == sg.WIN_CLOSED:
-            choice_window.close()
-            return None
-        if event == '-SLIDER-':
-            selected_count = int(values['-SLIDER-'])
-        if event == '确定':
-            choice_window.close()
-            return selected_count
-
-
-def _discard_selected_cards(
-    game_state,
-    title,
-    discard_count,
-    exclude_id=None,
-):
-    discard_window = _create_discard_window(
-        game_state, title, exclude_id=exclude_id
-    )
-    discarded_indexes = []
-    for _ in range(discard_count):
-        while True:
-            event, _ = discard_window.read()
-            if event == sg.WIN_CLOSED:
-                discard_window.close()
-                return False
-            if isinstance(event, str) and event.startswith('BTN'):
-                break
-        hand_index = int(event.removeprefix('BTN'))
-        game_state.draw_pile.append(game_state.hand_cards[hand_index])
-        game_state.hand_cards[hand_index] = 1
-        game_state.hand_size -= 1
-        discard_window[event].update(visible=False)
-        discarded_indexes.append(hand_index)
-
-    discard_window.close()
-    for hand_index in discarded_indexes:
-        game_state.hand_cards[hand_index] = -1
-    return True
-
-
-def _create_discard_window(game_state, title, exclude_id=None):
-    layout = [
-        [sg.Column(
-            [[sg.Button(
-                image_data=game_state.card_images[
-                    game_state.hand_cards[row_index * 3 + column_index]
-                ],
-                key=f"BTN{row_index * 3 + column_index}",
-                pad=BUTTON_PAD
-            ) for column_index in range(3)]
-                for row_index in range(40)],
-            scrollable=True,
-            size=(420, 350),
-            vertical_scroll_only=True,
-            expand_x=True, expand_y=True,
-            key='-DISCARD-COL-'
-        )]
-    ]
-    discard_window = sg.Window(
-        title, layout, finalize=True, keep_on_top=True
-    )
-    hand_index = 0
-    while game_state.hand_cards[hand_index] != 0:
-        card_id = game_state.hand_cards[hand_index]
-        discard_window[f'BTN{hand_index}'].update(
-            image_data=game_state.card_images[card_id],
-            visible=exclude_id is None or card_id != exclude_id,
-        )
-        hand_index += 1
-    game_state.hand_size = hand_index
-    while hand_index < 120 and game_state.hand_cards[hand_index] == 0:
-        discard_window[f'BTN{hand_index}'].update(visible=False)
-        hand_index += 1
-    return discard_window
 
 
 # ============================================================
@@ -823,12 +840,14 @@ def check_game_over(game_state):
     if game_state.game_over:
         return
     if _is_player_defeated(game_state, 1):
-        print('玩家2获胜')
+        from card_duel.ui.network import colored_announce
+        colored_announce(game_state, '玩家2获胜')
         sg.popup_notify('还可以继续打牌哦', title='玩家2获胜',
                         display_duration_in_ms=3000, location=(700, 500))
         game_state.game_over = True
     if _is_player_defeated(game_state, 2):
-        print('玩家1获胜')
+        from card_duel.ui.network import colored_announce
+        colored_announce(game_state, '玩家1获胜')
         sg.popup_notify('还可以继续打牌哦', title='玩家1获胜',
                         display_duration_in_ms=3000, location=(700, 500))
         game_state.game_over = True

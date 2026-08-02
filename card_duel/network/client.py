@@ -25,7 +25,9 @@ from card_duel.network.protocol import (
 from card_duel.ui.network import (
     WINDOW_SIZE,
     WINDOW_TITLE,
+    bind_hand_card_events,
     character_select_dialog,
+    colored_announce,
     create_main_layout,
     init_theme,
     refresh_cards,
@@ -138,12 +140,20 @@ def prepare_game_window(game_state):
     if not game_state.card_images:
         return False
 
+    peer_character_id = game_state.character_ids[1]
+    game_state.peer_card_images, _ = load_character_images(peer_character_id)
+
     game_state.draw_pile = build_shuffled_deck(
         1,
         game_state.max_card_id,
         get_card_counts(character_id),
     )
-    layout = create_main_layout(game_state.card_images, game_state.hand_cards)
+    layout = create_main_layout(
+        game_state.card_images,
+        game_state.hand_cards,
+        local_player_id=game_state.local_player_id,
+        character_ids=game_state.character_ids,
+    )
     game_state.window = sg.Window(
         WINDOW_TITLE,
         layout,
@@ -153,38 +163,39 @@ def prepare_game_window(game_state):
         keep_on_top=True,
         resizable=True,
     )
+    bind_hand_card_events(game_state)
     refresh_cards(game_state)
     return True
 
 
 def run_client_game(game_state):
     set_phase(game_state, "对战开始")
-    print(" ---------------------------------------------------- ")
-    print(f"你选择了: {CHARACTERS[game_state.character_ids[2]]}")
-    print(f"对手选择了: {CHARACTERS[game_state.character_ids[1]]}")
-    print("对手先出牌")
-    print(" ---------------------------------------------------- ")
+    colored_announce(game_state, " ---------------------------------------------------- ")
+    colored_announce(game_state, f"你选择了: {CHARACTERS[game_state.character_ids[2]]}")
+    colored_announce(game_state, f"对手选择了: {CHARACTERS[game_state.character_ids[1]]}")
+    colored_announce(game_state, "对手先出牌")
+    colored_announce(game_state, " ---------------------------------------------------- ")
 
     draw_cards(game_state, 2)
     refresh_cards(game_state)
     round_number = 1
 
     while all(player.health > 0 for player in game_state.players.values()):
-        print(f"-------------------- ROUND {round_number} --------------------")
+        colored_announce(game_state, f"-------------------- ROUND {round_number} --------------------")
         set_phase(game_state, f"回合 {round_number} - 对手出牌中...")
         set_cards_enabled(game_state, False)
         game_state.window.refresh()
 
         receive_until_turn_change(game_state)
-        print("[对手的回合结束]")
+        colored_announce(game_state, "[对手的回合结束]")
         refresh_cards(game_state)
-        print(" ---------------------------------------------------- ")
+        colored_announce(game_state, " ---------------------------------------------------- ")
 
         if not play_active_turn(game_state, player_id=2, round_number=round_number):
             return
         signal_turn_change(game_state)
         time.sleep(0.3)
-        print(" ---------------------------------------------------- ")
+        colored_announce(game_state, " ---------------------------------------------------- ")
         round_number += 1
 
     set_phase(game_state, "游戏结束")
