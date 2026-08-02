@@ -1,3 +1,2 @@
 FreeSimpleGUI
-customtkinter
 Pillow

@@ -1,8 +1,8 @@
 """Five-phase turn engine used by the network game."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable
 
 
 class TurnPhase(Enum):

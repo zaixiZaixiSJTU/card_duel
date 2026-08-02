@@ -25,9 +25,7 @@ class TurnEngineTests(unittest.TestCase):
         for phase in PHASE_SEQUENCE:
             self.engine.register_phase_handler(
                 phase,
-                lambda context, phases=visited_phases: phases.append(
-                    context.phase
-                ),
+                lambda context, phases=visited_phases: phases.append(context.phase),
             )
 
         for phase in PHASE_SEQUENCE:

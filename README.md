@@ -1,196 +1,178 @@
 # Card Duel（卡牌对决）
 
-Card Duel 是一个 Python 双人卡牌对战项目，提供两种运行方式：
+Python 双人卡牌对战项目，通过 TCP 支持同机或局域网联机。项目使用可扩展角色目录、五阶段回合引擎和统一消息协议；战士与蛞蝓猫已实现，女猎手和时间守护者目前是显式占位角色。
 
-- 本地演示版：使用 `customtkinter`，两名玩家在同一窗口中轮流操作。
-- 局域网对战版：使用 `FreeSimpleGUI` 和 TCP Socket，由服务端（玩家 1）与客户端（玩家 2）共同完成一局游戏。
+## 快速开始
 
-源码已统一为 UTF-8，并按“核心规则、界面、网络、应用入口”拆分。根目录的三个启动脚本仍兼容原有命令。
-
-## 界面风格
-
-本地版与联网版使用统一的简笔画简约风：
-
-- 暖白纸张背景和轻量横线纹理；
-- 深色墨线卡片与扁平描边按钮；
-- 低饱和红、绿、蓝作为少量状态提示色；
-- 成功出牌直接写入战斗记录，不再用弹窗打断操作；
-- 联机版提供常驻聊天输入栏，双方在出牌或等待阶段都可发送消息；
-- 保留错误、能量不足和连接异常等必要提示。
-
-纸张背景由 Pillow 实时生成，不需要额外图片或新增第三方依赖。
-
-## 已实现角色
-
-- 战士（角色 1）：16 张完整卡牌与传统生命、防御、力量体系。
-- 女猎手（角色 2）：预留角色配置。
-- 时间守护者（角色 3）：预留角色配置。
-- 蛞蝓猫（角色 4）：依据 `工作簿1_规范修订版.xlsx` 实现，包含48张注册牌，以及业力、敏捷、动能、饱食度、见闻扩牌、生物威胁和形态状态。
-
-蛞蝓猫初始牌堆只包含10种技能牌，共49张。物品和生物通过见闻牌定向加入牌组；“猫跑路了”负责取得见闻牌。由于原表未提供卡图，联网版会根据卡牌名称、类型、消耗和效果实时生成纸张风格卡面，不要求新增 `assets/cards/4/`。
-
-## 环境要求
-
-- Python 3.10 或更高版本
-- Windows、macOS 或 Linux（联网版界面与字体在 Windows 下效果最佳）
-
-安装依赖：
-
-```bash
-python -m venv .venv
-```
-
-Windows PowerShell：
+要求 Python 3.10+。
 
 ```powershell
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+python -m pip install -e ".[dev]"
 ```
 
-macOS / Linux：
+运行：
 
-```bash
-source .venv/bin/activate
-python -m pip install -r requirements.txt
+```powershell
+python main.py   # 玩家 1 创建房间
+python guest.py  # 玩家 2 加入房间
 ```
 
-如果旧 `.venv` 记录了已经卸载的 Python 路径，请删除该虚拟环境后按上述命令重新创建。
+安装后也可使用 `card-duel-host`、`card-duel-join`。
 
-## 运行方式
+本机测试时，在两个终端中分别启动 `main.py` 和 `guest.py`，玩家 2 输入 `127.0.0.1`。默认端口为 `65432`，此方式会完整经过真实选角、卡牌、回合、聊天和网络同步逻辑。
 
-### 本地演示版
+## 依赖方向
 
-```bash
-python demo.py
+```text
+启动入口 / UI / network
+          │
+          ▼
+application          组装角色感知的用例服务
+          │
+          ├───────────────┐
+          ▼               ▼
+cards                 core
+角色包、目录、注册表    纯状态、回合和通用规则
 ```
 
-依次为玩家 1、玩家 2 选择角色，然后在同一窗口中轮流出牌。
+必须保持的边界：
 
-### 局域网对战版
+- `core` 不依赖角色包、GUI 或 socket；
+- `CardRegistry` 不导入任何具体角色；
+- 卡牌处理器只接收一个 `CardPlayContext`；
+- 角色规则通过目录注入 `CombatEngine`，核心规则不判断角色编号；
+- `GameState` 只保存对局数据，窗口和连接属于 `GameSession`；
+- UI 不结算伤害、抽牌、消耗或角色能力；
+- 联机消息全部使用长度前缀 JSON，不依赖一次 `recv()` 恰好收到一条消息。
 
-先在玩家 1 的电脑上启动服务端：
-
-```bash
-python main.py
-```
-
-再在玩家 2 的电脑上启动客户端：
-
-```bash
-python guest.py
-```
-
-客户端输入服务端的局域网 IP。双方默认使用 TCP 端口 `65432`，如无法连接，请检查系统防火墙是否允许 Python 使用该端口。同一台电脑测试时可输入 `127.0.0.1`。
-
-也可以直接使用包入口：
-
-```bash
-python -m card_duel.apps.local
-python -m card_duel.network.server
-python -m card_duel.network.client
-```
+这些约束由 `tests/test_architecture.py` 固定，不只是文档约定。
 
 ## 项目结构
 
 ```text
-PythonProject/
-├── card_duel/                 # 主程序包
-│   ├── apps/
-│   │   └── local.py           # 本地演示版应用与窗口切换
-│   ├── cards/
-│   │   ├── registry.py        # 所有角色的卡牌注册入口
-│   │   ├── slugcat_data.py    # 蛞蝓猫48张牌的静态表格规则
-│   │   └── slugcat.py         # 蛞蝓猫效果与阶段判定
-│   ├── core/
-│   │   ├── characters.py      # 共用角色名称与角色配置
-│   │   ├── combat.py          # 战斗状态、数值结算与卡牌效果函数
-│   │   ├── demo.py            # 不依赖 UI 的本地演示规则
-│   │   └── game.py            # 五阶段回合状态机与阶段钩子
-│   ├── network/
-│   │   ├── client.py          # 玩家 2：连接、选角和客户端主循环
-│   │   ├── gameplay.py        # 双端共用的出牌、弃牌和回合流程
-│   │   ├── protocol.py        # 状态同步、确认消息和回合切换协议
-│   │   └── server.py          # 玩家 1：监听、选角和服务端主循环
-│   └── ui/
-│       ├── background.py      # 本地版纸张纹理与线稿背景
-│       ├── character_card.py  # 可点击的角色卡组件
-│       ├── game.py            # 本地版战斗界面
-│       ├── network.py         # 联网版布局与界面刷新函数
-│       ├── selection.py       # 本地版角色选择界面
-│       ├── theme.py           # 本地版主题常量
-│       └── widgets.py         # 简笔画风格通用控件
-├── assets/
-│   └── cards/
-│       └── 1/                 # 角色 1（战士）的联网版卡图
-├── examples/
-│   └── slider_dialog.py       # FreeSimpleGUI 滑块示例
-├── tests/
-│   ├── test_local_game.py     # 本地纯逻辑单元测试
-│   ├── test_protocol.py       # 大型联网状态负载测试
-│   ├── test_slugcat.py        # 蛞蝓猫资源、卡牌和卡面测试
-│   └── test_turn_engine.py    # 五阶段顺序与阶段钩子测试
-├── tools/
-│   └── socket_echo_server.py  # 独立 Socket 调试工具
-├── output/                    # 历史构建产物，不参与源码运行
-├── demo.py                    # 本地版兼容启动脚本
-├── guest.py                   # 客户端兼容启动脚本
-├── main.py                    # 服务端兼容启动脚本
-├── requirements.txt           # Python 依赖
-└── README.md
+card_duel/
+├── application/
+│   ├── choices.py              # 卡牌选择端口与无 GUI 实现
+│   └── combat.py               # CombatEngine：角色感知的战斗用例
+├── cards/
+│   ├── models.py               # CardPlayContext、卡牌/角色契约
+│   ├── registry.py             # 纯通用 CardRegistry，不导入具体角色
+│   ├── catalog.py              # 内置角色包的唯一组合根
+│   ├── placeholders.py         # 角色 2、3 的显式占位包
+│   ├── warrior/
+│   │   ├── state.py            # WarriorData
+│   │   ├── effects.py          # 战士卡牌效果
+│   │   ├── lifecycle.py        # 战士初始化与阶段能力
+│   │   └── catalog.py          # 战士牌组和注册函数
+│   └── slugcat/
+│       ├── state.py            # SlugcatData
+│       ├── hand.py             # 手牌区小型操作
+│       ├── effects.py          # 蛞蝓猫卡牌效果
+│       ├── lifecycle.py        # 业力、敏捷、生物和阶段判定
+│       ├── specs.py            # 48 张卡牌静态规格
+│       └── catalog.py          # 蛞蝓猫牌组和注册函数
+├── core/
+│   ├── models.py               # GameState、CharacterState、通用状态
+│   ├── rules.py                # 牌堆、防御、抽牌、时间线基础操作
+│   ├── game.py                 # 五阶段 TurnEngine
+│   ├── resources.py            # 卡图加载与生成卡面
+│   └── combat.py               # 仅供旧调用方使用的兼容门面
+├── network/
+│   ├── session.py              # 状态、目录、CombatEngine、窗口和连接
+│   ├── setup.py                # 选角与联机窗口准备
+│   ├── transport.py            # 长度前缀 JSON 分帧
+│   ├── protocol.py             # 类型化消息信封和状态同步
+│   ├── gameplay.py             # 双端共用五阶段主动回合
+│   ├── server.py               # 玩家 1
+│   └── client.py               # 玩家 2
+└── ui/
+    ├── network.py             # 联网主布局
+    ├── network_style.py       # 联网视觉常量和主题
+    ├── network_view.py        # 状态到控件的单向渲染
+    ├── network_dialogs.py     # 选角和等待对话框
+    └── choices.py             # ChoiceProvider 的 GUI 实现
 ```
 
-## 代码分层与调用关系
+根目录的 `main.py`、`guest.py` 是兼容启动入口。`output/`、虚拟环境、缓存和构建产物均由 `.gitignore` 排除。
+
+## 卡牌究竟在哪里注册
+
+注册分为三个明确角色：
+
+1. [registry.py](card_duel/cards/registry.py) 只定义通用容器和校验逻辑，不知道战士或蛞蝓猫；
+2. 每个角色在自己的 `catalog.py` 中声明卡牌、牌组数量和生命周期规则；
+3. [catalog.py](card_duel/cards/catalog.py) 是应用组合根，创建注册表并调用各角色的 `register()`。
+
+蛞蝓猫的注册入口是：
 
 ```text
-启动脚本
-  ├─ demo.py  ──> apps/local.py ──> ui/* ──> core/demo.py
-  ├─ main.py  ──> network/server.py ─┐
-  └─ guest.py ──> network/client.py ─┴─> network/gameplay.py
-                                         ├─> network/protocol.py
-                                         ├─> core/game.py
-                                         ├─> core/combat.py
-                                         ├─> cards/registry.py
-                                         └─> ui/network.py
+card_duel/cards/slugcat/catalog.py::register
 ```
 
-- `core/game.py` 只负责回合阶段的顺序推进和阶段回调分发。
-- `core/combat.py` 保存联网版战斗状态、数值结算和具体卡牌效果。
-- `cards/registry.py` 是唯一的卡牌注册区域，集中维护牌组数量、名称、效果函数和消耗属性。
-- `ui` 只负责创建控件、显示状态和处理界面事件。
-- `network/protocol.py` 集中维护两端完全一致的通信格式，避免服务端与客户端各写一份同步代码。
-- `network/gameplay.py` 集中维护共用的主动回合流程，服务端和客户端只决定谁先行动。
-- `apps` 负责组装核心逻辑与界面，不保存卡牌规则。
+默认组装过程：
 
-## 关键数据模型
-
-### 联网版
-
-`NetworkGameState` 是联网版的唯一聚合状态，主要字段如下：
-
-- `players`：以玩家编号为键的 `CharacterState`。
-- `character_ids`：双方选择的角色编号。
-- `hand_cards` / `hand_size`：本地手牌和有效手牌数量。
-- `draw_pile`：当前角色的牌堆。
-- `defences`：双方带剩余回合数的防御效果。
-- `timeline`：延迟生效的 `ScheduledEvent` 列表。
-- `players[*].special`：角色专属且可同步的公开状态；蛞蝓猫在此保存业力、敏捷、动能、饱食度、见闻池和生物威胁。
-- `connection` / `window`：当前网络连接与界面对象。
-
-`CARD_REGISTRY` 使用 `(角色编号, 卡牌编号)` 映射到 `CardDefinition`。卡牌函数统一接收：
-
-```text
-game_state, source_player_id, target_player_id, announce, ignore_cost
+```python
+registry = CardRegistry()
+register_warrior(registry)
+register_placeholders(registry)
+register_slugcat(registry)
+registry.freeze()
 ```
+
+因此新增角色不需要修改 `registry.py`，只需新增角色包，并在应用组合根选择是否装载它。
+
+## 状态模型
+
+`CharacterState` 分为三部分：
+
+- 公共数值：生命、能量、防御、力量、毒；
+- `CombatStatuses`：任何角色都可能受到的免疫、致盲、插入物、生物威胁等状态；
+- `character_data`：由角色包创建的类型化 dataclass，例如 `WarriorData` 或 `SlugcatData`。
+
+旧版无结构的 `special: dict[str, object]` 已移除。联机同步使用 dataclass 字段白名单，收到未知字段会拒绝应用。
+
+防御效果属于对应的 `CharacterState`，`defence` 是由效果列表即时计算的只读属性；不存在需要 UI 刷新才能同步的第二份防御总值。
+
+## 卡牌处理契约
+
+所有卡牌处理器统一为：
+
+```python
+def effect(context: CardPlayContext) -> bool: ...
+```
+
+`CardPlayContext` 明确提供：
+
+- `state`、`source`、`target`；
+- 玩家编号和消息输出；
+- `choices` 输入端口；
+- `combat` 战斗服务；
+- 当前 `registry` 与嵌套出牌方法；
+- `ignore_cost`。
+
+卡牌模块不导入 FreeSimpleGUI，也不通过全局变量或 `ContextVar` 偷渡依赖。
+
+## 角色生命周期
+
+每个角色规则对象负责：
+
+- 创建类型化角色数据；
+- 初始化玩家；
+- 注册阶段钩子；
+- 修正生命损失；
+- 处理生命归零；
+- 判断失败；
+- 格式化角色状态。
+
+因此 `CombatEngine` 不包含 `character_id == 4` 一类分支。蛞蝓猫的敏捷减伤和业力复活由 `SlugcatRules` 实现，战士的心连心由 `WarriorRules` 注册到回合开始阶段。
 
 ## 回合时序
-
-联网版每个玩家的回合严格按以下顺序执行：
 
 ```text
 回合开始时 → 抽牌阶段 → 出牌阶段 → 弃牌阶段 → 回合结束时
 ```
-
-`TurnEngine` 不允许跳过、重复或倒退阶段。卡牌、角色能力和通用规则可以通过下面的方式注册判定：
 
 ```python
 turn.register_phase_handler(
@@ -200,58 +182,38 @@ turn.register_phase_handler(
 )
 ```
 
-优先级数值越小越先执行。回调会收到 `TurnContext`，其中包含游戏状态、回合数、行动玩家、对手、当前阶段和消息输出函数。
+优先级越小越先执行。阶段不可跳过、倒退或重复。
 
-当前默认判定位置：
+## 联机协议
 
-- 回合开始时：防御持续时间、延迟事件、心连心等开始阶段效果。
-- 抽牌阶段：标准抽 3 张牌及由能力产生的额外抽牌。
-- 出牌阶段：读取并结算玩家选择的卡牌。
-- 弃牌阶段：将手牌整理到 4 张以内。
-- 回合结束时：结算蛞蝓猫手牌与威胁区中的生物，并为其他结束阶段效果提供统一判定点。
+所有消息均为统一信封：
 
-### 本地演示版
-
-`LocalGame` 管理 `LocalPlayer`、当前回合、行动玩家和胜负状态。界面通过公开属性和方法读取状态，不直接修改规则细节。
-
-## 卡图资源约定
-
-联网版按下面的目录格式加载图片：
-
-```text
-assets/cards/<character_id>/img-0.jpg
-assets/cards/<character_id>/img-1.jpg
-assets/cards/<character_id>/img-2.jpg
-...
+```json
+{"type": "chat", "message": "..."}
+{"type": "announcement", "message": "..."}
+{"type": "state", "players": {}, "defences": {}}
+{"type": "turn_change"}
 ```
 
-图片编号必须连续。`img-0.jpg` 用作默认/占位图片，实际卡牌编号从 1 开始。添加角色时还需要同步更新：
+每个 JSON 负载前有四字节大端长度。状态一次发送，不再使用字符串标记和多轮 `pass` ACK，连续或拆分的 TCP 数据都能正确恢复消息边界。
 
-1. `card_duel/core/characters.py` 中的角色信息；
-2. `card_duel/cards/registry.py` 中的牌组数量；
-3. `CARD_REGISTRY` 中的卡牌定义与效果函数；
-4. 对应的 `assets/cards/<character_id>/` 图片目录。
+## 新增角色
 
-目前联网版完整实现了角色 1（战士）和角色 4（蛞蝓猫）；角色 2、3 仍是预留配置。蛞蝓猫使用运行时生成卡面，其他角色仍可按上述目录约定提供自定义卡图。本地演示版全部角色均可选择，但使用的是简化随机伤害规则。
+1. 新建 `card_duel/cards/<character>/`；
+2. 定义角色数据 dataclass；
+3. 实现 `CharacterRules`；
+4. 使用 `CardPlayContext` 实现卡牌；
+5. 在该包 `catalog.py` 提供 `register(registry)`；
+6. 在需要该角色的组合根调用注册函数；
+7. 添加规则、阶段、注册完整性和协议同步测试。
 
 ## 测试与检查
 
-运行单元测试：
-
-```bash
+```powershell
 python -m unittest discover -s tests -v
+python -m compileall -q card_duel main.py guest.py examples tools tests
+ruff check .
+ruff format --check .
 ```
 
-检查全部 Python 文件的语法：
-
-```bash
-python -m compileall -q card_duel main.py guest.py demo.py examples tools tests
-```
-
-## 命名约定
-
-- 类名使用 `PascalCase`，例如 `NetworkGameState`、`DefenceEffect`。
-- 函数、变量和模块使用 `snake_case`，例如 `send_game_state`、`round_number`。
-- 玩家编号变量统一以 `_player_id` 结尾，角色编号统一以 `_character_id` 结尾。
-- 布尔变量优先使用 `is_`、`has_` 或描述结果的过去式，例如 `is_over`、`was_played`。
-- UI 控件变量体现用途，例如 `progress_window`、`confirm_button`，不再使用 `w`、`rs`、`qp` 等缩写。
+包元数据、命令入口、依赖和静态检查配置位于 `pyproject.toml`。

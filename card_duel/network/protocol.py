@@ -1,36 +1,42 @@
-"""Shared socket protocol used by both network players."""
+"""Framed network messages shared by both players."""
 
-import json
+from __future__ import annotations
+
 import select
-import socket
-import time
+from dataclasses import asdict, fields, is_dataclass
 
 import FreeSimpleGUI as sg
 
-from card_duel.core.combat import DefenceEffect, check_game_over
-from card_duel.ui.network import (
-    CHAT_INPUT_KEY,
-    CHAT_SEND_KEY,
-    refresh_status,
-)
+from card_duel.core.models import DefenceEffect
+from card_duel.network.transport import receive_json, send_json
+from card_duel.ui.network_style import CHAT_INPUT_KEY, CHAT_SEND_KEY
+from card_duel.ui.network_view import refresh_status
 
-ACK_MESSAGE = "pass"
-STATE_MESSAGE = "data"
-TURN_CHANGE_MESSAGE = "change"
-CHAT_MESSAGE_PREFIX = "chat:"
 DEFAULT_PORT = 65432
 MAX_CHAT_LENGTH = 200
+PROTOCOL_VERSION = 1
+
+MESSAGE_ANNOUNCEMENT = "announcement"
+MESSAGE_CHAT = "chat"
+MESSAGE_STATE = "state"
+MESSAGE_TURN_CHANGE = "turn_change"
 
 
-def receive_with_ui(
-    game_state,
-    timeout=0.1,
-    buffer_size=1024,
-    allow_chat=False,
-):
-    """Receive bytes while keeping the GUI responsive."""
-    connection = game_state.connection
-    window = game_state.window
+def _session_window(session):
+    require_window = getattr(session, "require_window", None)
+    return require_window() if require_window else session.window
+
+
+def _receive_bytes_with_ui(
+    session,
+    byte_count: int,
+    *,
+    timeout: float = 0.1,
+    allow_chat: bool = False,
+) -> bytes:
+    """Receive an exact-frame chunk while continuing to pump GUI events."""
+    connection = session.connection
+    window = _session_window(session)
     original_timeout = connection.gettimeout()
     connection.settimeout(timeout)
     try:
@@ -39,174 +45,151 @@ def receive_with_ui(
             if event == sg.WIN_CLOSED:
                 return b""
             if allow_chat and event == CHAT_SEND_KEY:
-                send_chat_message(
-                    game_state,
-                    values.get(CHAT_INPUT_KEY, ""),
-                )
+                send_chat_message(session, values.get(CHAT_INPUT_KEY, ""))
                 continue
             try:
-                return connection.recv(buffer_size)
-            except socket.timeout:
+                return connection.recv(byte_count)
+            except TimeoutError:
                 continue
     finally:
         connection.settimeout(original_timeout)
 
 
-def wait_for_acknowledgement(game_state):
-    """Wait until the peer acknowledges the previous protocol message."""
-    response = None
-    while response != ACK_MESSAGE:
-        payload = receive_with_ui(game_state)
-        if not payload:
-            raise ConnectionError("对方已断开连接")
-        response = payload.decode("utf-8")
-        if response.startswith(CHAT_MESSAGE_PREFIX):
-            _show_peer_chat(response)
-            game_state.connection.sendall(ACK_MESSAGE.encode("utf-8"))
-            response = None
+def _receive_message(session, *, allow_chat: bool = False):
+    return receive_json(
+        lambda byte_count: _receive_bytes_with_ui(
+            session, byte_count, allow_chat=allow_chat
+        )
+    )
 
 
-def send_chat_message(game_state, message):
-    """Send one short chat message without mixing it into game rules."""
+def send_chat_message(session, message: str) -> bool:
     clean_message = " ".join(message.strip().splitlines())[:MAX_CHAT_LENGTH]
     if not clean_message:
         return False
-
-    payload = f"{CHAT_MESSAGE_PREFIX}{clean_message}"
-    game_state.connection.sendall(payload.encode("utf-8"))
-    wait_for_acknowledgement(game_state)
+    send_json(
+        session.connection,
+        {"type": MESSAGE_CHAT, "message": clean_message},
+    )
     print(f"[我] {clean_message}")
-    game_state.window[CHAT_INPUT_KEY].update("")
-    game_state.window.refresh()
+    window = _session_window(session)
+    window[CHAT_INPUT_KEY].update("")
+    window.refresh()
     return True
 
 
-def receive_pending_chat(game_state):
-    """Read peer chat while the local player is choosing an action."""
-    while select.select([game_state.connection], [], [], 0)[0]:
-        payload = game_state.connection.recv(1024)
-        if not payload:
-            raise ConnectionError("对方已断开连接")
-
-        response = payload.decode("utf-8")
-        if not response.startswith(CHAT_MESSAGE_PREFIX):
-            raise ConnectionError(f"收到非预期的联机消息: {response}")
-
-        _show_peer_chat(response)
-        game_state.connection.sendall(ACK_MESSAGE.encode("utf-8"))
-        game_state.window.refresh()
+def receive_pending_chat(session) -> None:
+    while select.select([session.connection], [], [], 0)[0]:
+        message = _receive_message(session)
+        if message.get("type") != MESSAGE_CHAT:
+            raise ConnectionError(f"行动阶段收到非预期消息: {message.get('type')}")
+        _show_peer_chat(message.get("message", ""))
+        _session_window(session).refresh()
 
 
-def _show_peer_chat(payload):
-    print(f"[对方] {payload.removeprefix(CHAT_MESSAGE_PREFIX)}")
+def _show_peer_chat(message: str) -> None:
+    print(f"[对方] {message}")
 
 
-def send_announcement(game_state, message):
-    game_state.connection.sendall(message.encode("utf-8"))
-    wait_for_acknowledgement(game_state)
+def send_announcement(session, message: str) -> None:
+    send_json(
+        session.connection,
+        {"type": MESSAGE_ANNOUNCEMENT, "message": message},
+    )
     print(message)
 
 
-def send_game_state(game_state):
-    """Send combat values and defence effects to the peer."""
-    refresh_status(game_state)
-    game_state.connection.sendall(STATE_MESSAGE.encode("utf-8"))
-    wait_for_acknowledgement(game_state)
-
-    player_data = {
+def send_game_state(session) -> None:
+    state = session.state
+    refresh_status(state, _session_window(session), session.registry)
+    players = {
         str(player_id): {
             "energy": player.energy,
             "health": player.health,
             "strength": player.strength,
             "poison": player.poison,
-            "special": player.special,
+            "statuses": _dataclass_payload(player.statuses),
+            "character_data": _dataclass_payload(player.character_data),
         }
-        for player_id, player in game_state.players.items()
+        for player_id, player in state.players.items()
     }
-    _send_json_payload(game_state.connection, player_data)
-    wait_for_acknowledgement(game_state)
-
-    for player_id in (1, 2):
-        defence_data = [
-            effect.to_dict() for effect in game_state.defences[player_id]
+    defences = {
+        str(player_id): [
+            effect.to_dict() for effect in state.players[player_id].defences
         ]
-        _send_json_payload(game_state.connection, defence_data)
-        wait_for_acknowledgement(game_state)
+        for player_id in (1, 2)
+    }
+    send_json(
+        session.connection,
+        {"type": MESSAGE_STATE, "players": players, "defences": defences},
+    )
+    _session_window(session).refresh()
 
-    game_state.window.refresh()
 
-
-def receive_until_turn_change(game_state):
-    """Apply peer updates until the peer signals that its turn ended."""
+def receive_until_turn_change(session) -> None:
     while True:
-        payload = receive_with_ui(game_state, allow_chat=True)
-        if not payload:
-            raise ConnectionError("对方已断开连接")
-        response = payload.decode("utf-8")
-
-        if response == TURN_CHANGE_MESSAGE:
-            refresh_status(game_state)
-            game_state.connection.sendall(ACK_MESSAGE.encode("utf-8"))
-            time.sleep(0.2)
+        message = _receive_message(session, allow_chat=True)
+        message_type = message.get("type")
+        if message_type == MESSAGE_TURN_CHANGE:
+            refresh_status(session.state, _session_window(session), session.registry)
             return
-
-        if response == STATE_MESSAGE:
-            game_state.connection.sendall(ACK_MESSAGE.encode("utf-8"))
-            _receive_game_state_payload(game_state)
-        elif response.startswith(CHAT_MESSAGE_PREFIX):
-            _show_peer_chat(response)
+        if message_type == MESSAGE_STATE:
+            _apply_state_message(session, message)
+        elif message_type == MESSAGE_CHAT:
+            _show_peer_chat(message.get("message", ""))
+        elif message_type == MESSAGE_ANNOUNCEMENT:
+            print(message.get("message", ""))
         else:
-            print(response)
-
-        game_state.connection.sendall(ACK_MESSAGE.encode("utf-8"))
-        game_state.window.refresh()
+            raise ConnectionError(f"未知联机消息类型: {message_type}")
+        _session_window(session).refresh()
 
 
-def _receive_game_state_payload(game_state):
-    player_data = _receive_json_payload(game_state)
-    for player_id, player in game_state.players.items():
-        values = player_data[str(player_id)]
+def _apply_state_message(session, message) -> None:
+    state = session.state
+    player_payloads = message["players"]
+    for player_id, player in state.players.items():
+        values = player_payloads[str(player_id)]
         player.energy = values["energy"]
         player.health = values["health"]
-        player.strength = values.get("strength", player.strength)
-        player.poison = values.get("poison", player.poison)
-        player.special.update(values.get("special", {}))
-    game_state.connection.sendall(ACK_MESSAGE.encode("utf-8"))
+        player.strength = values["strength"]
+        player.poison = values["poison"]
+        _apply_dataclass_values(player.statuses, values["statuses"])
+        _apply_dataclass_values(player.character_data, values["character_data"])
 
+    defence_payloads = message["defences"]
     for player_id in (1, 2):
-        defence_data = _receive_json_payload(game_state)
-        game_state.defences[player_id] = [
-            DefenceEffect.from_dict(item) for item in defence_data
+        state.players[player_id].defences = [
+            DefenceEffect.from_dict(item) for item in defence_payloads[str(player_id)]
         ]
-        if player_id == 1:
-            game_state.connection.sendall(ACK_MESSAGE.encode("utf-8"))
-
-    check_game_over(game_state)
-    refresh_status(game_state)
+    session.combat.check_game_over()
+    refresh_status(state, _session_window(session), session.registry)
 
 
+def _apply_dataclass_values(instance, values) -> None:
+    if not is_dataclass(instance):
+        raise TypeError("联机角色数据必须是 dataclass")
+    allowed = {item.name for item in fields(instance)}
+    unknown = set(values) - allowed
+    if unknown:
+        raise ValueError(f"收到未知状态字段: {sorted(unknown)}")
+    for name, value in values.items():
+        setattr(instance, name, value)
+
+
+def _dataclass_payload(instance):
+    if not is_dataclass(instance):
+        raise TypeError("联机角色数据必须是 dataclass")
+    return asdict(instance)
+
+
+def signal_turn_change(session) -> None:
+    send_json(session.connection, {"type": MESSAGE_TURN_CHANGE})
+
+
+# Private compatibility names retained for the framing regression test.
 def _send_json_payload(connection, data):
-    payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
-    connection.sendall(len(payload).to_bytes(4, "big") + payload)
+    send_json(connection, data)
 
 
-def _receive_json_payload(game_state):
-    payload_size = int.from_bytes(_receive_exact(game_state, 4), "big")
-    return json.loads(_receive_exact(game_state, payload_size).decode("utf-8"))
-
-
-def _receive_exact(game_state, byte_count):
-    chunks = []
-    remaining = byte_count
-    while remaining:
-        chunk = receive_with_ui(game_state, buffer_size=remaining)
-        if not chunk:
-            raise ConnectionError("对方已断开连接")
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(chunks)
-
-
-def signal_turn_change(game_state):
-    game_state.connection.sendall(TURN_CHANGE_MESSAGE.encode("utf-8"))
-    wait_for_acknowledgement(game_state)
+def _receive_json_payload(session):
+    return _receive_message(session)
