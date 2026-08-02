@@ -271,7 +271,16 @@ def _run_card_play_phase(game_state, player_id, opponent_id, announce):
         ):
             return False
         if not definition.exhausted:
-            game_state.draw_pile.append(card_id)
+            # 见闻牌打出后回 discovery_pool 而非 draw_pile
+            from card_duel.cards.slugcat_data import SLUGCAT_DISCOVERY_IDS
+            if card_id in SLUGCAT_DISCOVERY_IDS:
+                player = game_state.players[player_id]
+                pool = player.special.setdefault("discovery_pool", [])
+                # 打出的见闻牌插底（最新使用的牌不会立即再抽到）
+                pool.insert(0, card_id)
+            else:
+                # 打出的牌插底，避免刚打出的牌下一回合又被抽回来。
+                game_state.draw_pile.insert(0, card_id)
         game_state.hand_cards[hand_index] = -1
         refresh_cards(game_state)
         show_played_card(game_state, player_id, card_id)
@@ -301,7 +310,9 @@ def _run_discard_phase(game_state, announce):
     announce(" ---------------------------------------------------- ")
     announce(" [弃牌阶段]")
 
-    excess_cards = max(0, game_state.hand_size - HAND_LIMIT)
+    from card_duel.cards.slugcat import effective_hand_size_for_limit
+    effective_size = effective_hand_size_for_limit(game_state)
+    excess_cards = max(0, effective_size - HAND_LIMIT)
     announce(f"需要弃牌:{excess_cards}" if excess_cards else "无需弃牌")
 
     game_state.window["-btn1-"].update(
@@ -315,7 +326,7 @@ def _run_discard_phase(game_state, announce):
         if card_id in (0, -1):
             return False
         # 生物牌和插入物不能弃牌
-        from card_duel.cards.slugcat_data import SLUGCAT_NO_DISCARD_IDS, SLUGCAT_INSERTED_IDS, SLUGCAT_CREATURE_IDS
+        from card_duel.cards.slugcat_data import SLUGCAT_NO_DISCARD_IDS, SLUGCAT_INSERTED_IDS, SLUGCAT_CREATURE_IDS, SLUGCAT_DISCOVERY_IDS
         if card_id in SLUGCAT_NO_DISCARD_IDS:
             if card_id in SLUGCAT_INSERTED_IDS:
                 announce("插入物无法弃牌——请打出它来拔出")
@@ -325,7 +336,14 @@ def _run_discard_phase(game_state, announce):
                 announce("此牌无法弃牌")
             return False
         flash_hand_card(game_state, hand_index, COLOR_HIGHLIGHT)
-        game_state.draw_pile.append(card_id)
+        # 见闻牌弃牌时放回 discovery_pool 而非 draw_pile
+        if card_id in SLUGCAT_DISCOVERY_IDS:
+            player = game_state.players[game_state.local_player_id]
+            pool = player.special.setdefault("discovery_pool", [])
+            pool.insert(0, card_id)
+        else:
+            # 弃置到牌堆底部，避免刚弃的牌下一回合又被抽到。
+            game_state.draw_pile.insert(0, card_id)
         game_state.hand_cards[hand_index] = -1
         game_state.hand_size -= 1
         refresh_cards(game_state)
@@ -340,7 +358,7 @@ def _run_discard_phase(game_state, announce):
                 return False
             if _pump_common_events(game_state, event, values):
                 continue
-            if event == "-btn1-" and game_state.hand_size <= HAND_LIMIT:
+            if event == "-btn1-" and effective_hand_size_for_limit(game_state) <= HAND_LIMIT:
                 disarm_card(game_state)
                 set_mode_hint(game_state, "弃牌完成", COLOR_MUTED)
                 return True
@@ -353,7 +371,9 @@ def _run_discard_phase(game_state, announce):
 
 def _refresh_discard_hint(game_state):
     """Update the mode banner to show how many cards still need discarding."""
-    excess = max(0, game_state.hand_size - HAND_LIMIT)
+    from card_duel.cards.slugcat import effective_hand_size_for_limit
+    effective_size = effective_hand_size_for_limit(game_state)
+    excess = max(0, effective_size - HAND_LIMIT)
     if excess:
         set_mode_hint(
             game_state,

@@ -66,7 +66,11 @@ class SlugcatTests(unittest.TestCase):
         self.assertEqual(len(self.game.draw_pile), 17)
         self.assertTrue(self.game.players[1].special["discovery_pool"])
 
-    def test_turn_start_resets_agility_and_applies_pending_discard(self):
+    def test_turn_start_resets_agility_and_pending_discard_resolves_immediately(self):
+        # _resolve_pending_discards is now called immediately on state
+        # receive (炸矛穿透立即弃牌), not deferred to TURN_START.
+        from card_duel.cards.slugcat import _resolve_pending_discards
+
         self.game.hand_cards[:3] = [6, 7, 0]
         self.game.hand_size = 2
         self.game.players[1].special["agility"] = 5
@@ -76,7 +80,15 @@ class SlugcatTests(unittest.TestCase):
 
         turn.enter_phase(TurnPhase.TURN_START)
 
+        # Agility still resets at turn start
         self.assertEqual(self.game.players[1].special["agility"], 0)
+        # pending_discards is NOT cleared at turn start anymore
+        self.assertEqual(self.game.players[1].special["pending_discards"], 1)
+
+        # Now resolve pending discards directly (as _receive_game_state_payload does)
+        _resolve_pending_discards(
+            self.game, self.game.players[1], announce=self.messages.append
+        )
         self.assertEqual(self.game.players[1].special["pending_discards"], 0)
         self.assertEqual(self.game.hand_cards[:2].count(-1), 1)
 

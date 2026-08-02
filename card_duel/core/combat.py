@@ -16,7 +16,7 @@ from card_duel.core.characters import CHARACTER_NAMES
 # ============================================================
 # Constants
 # ============================================================
-IMAGE_SIZE = (120, 180)
+IMAGE_SIZE = (160, 240)
 CHARACTERS = ["未选择", *(CHARACTER_NAMES[index] for index in sorted(CHARACTER_NAMES))]
 
 # ============================================================
@@ -211,7 +211,7 @@ def _generate_registered_card_images(character_id):
     return images, max_card_id
 
 
-def _render_card_placeholder(definition):
+def _render_card_placeholder(definition, effective_cost=None):
     image = Image.new("RGB", IMAGE_SIZE, "#FFFDF8")
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle(
@@ -231,19 +231,28 @@ def _render_card_placeholder(definition):
         "形态": "#8B79A8",
     }
     accent = accent_by_type.get(definition.card_type, "#837A70")
-    draw.rounded_rectangle((7, 7, 113, 31), radius=5, fill=accent)
-    title_font = _load_card_font(14, bold=True)
-    body_font = _load_card_font(9)
-    small_font = _load_card_font(8)
-    draw.text((11, 10), definition.name, fill="#FFFDF8", font=title_font)
-    cost_text = "X" if definition.cost is None else str(definition.cost)
-    draw.ellipse((92, 36, 112, 56), outline=accent, width=2)
-    draw.text((99, 39), cost_text, fill=accent, font=body_font)
-    draw.text((10, 40), definition.card_type, fill=accent, font=body_font)
-    y = 66
-    for line in _wrap_card_text(definition.description, 11)[:7]:
-        draw.text((10, y), line, fill="#2E2A26", font=small_font)
-        y += 14
+    draw.rounded_rectangle((7, 7, 153, 41), radius=5, fill=accent)
+    title_font = _load_card_font(18, bold=True)
+    body_font = _load_card_font(12)
+    small_font = _load_card_font(11)
+    draw.text((14, 12), definition.name, fill="#FFFDF8", font=title_font)
+    # Cost: use effective_cost if provided (and not None), else fall back to definition.cost
+    cost = definition.cost if effective_cost is None else effective_cost
+    cost_text = "X" if cost is None else str(cost)
+    # Cost circle changes color when discounted (effective_cost < base cost)
+    is_discounted = (
+        effective_cost is not None
+        and definition.cost is not None
+        and effective_cost < definition.cost
+    )
+    cost_accent = "#2E7D32" if is_discounted else accent
+    draw.ellipse((124, 48, 152, 76), outline=cost_accent, width=2)
+    draw.text((132, 52), cost_text, fill=cost_accent, font=body_font)
+    draw.text((13, 52), definition.card_type, fill=accent, font=body_font)
+    y = 88
+    for line in _wrap_card_text(definition.description, 13)[:8]:
+        draw.text((13, y), line, fill="#2E2A26", font=small_font)
+        y += 18
     return _encode_pil_image(image)
 
 
@@ -258,6 +267,37 @@ def _load_card_font(size, bold=False):
 
 def _wrap_card_text(text, width):
     return [text[index:index + width] for index in range(0, len(text), width)]
+
+
+def render_creature_card_with_hp(definition, hp):
+    """Render a creature card with a dynamic red HP number overlaid.
+
+    Reuses the base card image then draws a large red HP badge in the
+    bottom-right corner so the player can see current health at a glance.
+    """
+    base_data = _render_card_placeholder(definition)
+    # Decode base64 back to PIL image
+    import base64 as _b64
+    image_bytes = _b64.b64decode(base_data)
+    image = Image.open(io.BytesIO(image_bytes))
+    draw = ImageDraw.Draw(image)
+    hp_font = _load_card_font(20, bold=True)
+    hp_text = str(max(0, hp))
+    # Red badge in bottom-right
+    badge_x, badge_y = IMAGE_SIZE[0] - 42, IMAGE_SIZE[1] - 38
+    draw.ellipse((badge_x - 4, badge_y - 4, badge_x + 30, badge_y + 30), fill="#C8332B")
+    draw.text((badge_x + 2, badge_y), hp_text, fill="#FFFDF8", font=hp_font)
+    return _encode_pil_image(image)
+
+
+def render_card_with_effective_cost(definition, effective_cost):
+    """Render a card placeholder with a custom effective cost.
+
+    Used when the runtime cost of a card differs from its printed cost
+    (e.g. discovery cards discounted by the played-discovery stacking
+    mechanic). The cost-circle outline and digit turn green when discounted.
+    """
+    return _render_card_placeholder(definition, effective_cost=effective_cost)
 
 
 def _encode_pil_image(image):
@@ -332,27 +372,16 @@ def apply_damage(game_state, damage, target_player_id, announce=None):
             break
         if defence_effects[0].amount == 0:
             defence_effects.pop(0)
-    return lose_life(game_state, damage, target_player_id, announce=announce)
 
-
-def lose_life(game_state, amount, target_player_id, announce=None):
-    """Lose life without defence; Slugcat agility/centipede still prevents life loss."""
-    target = game_state.players[target_player_id]
-    amount = max(0, amount)
-    if game_state.character_ids.get(target_player_id) == 4:
-        # 烈焰蜈蚣免伤
-        from card_duel.cards.slugcat import check_centipede_immunity
-
-        amount = check_centipede_immunity(
-            game_state, target_player_id, amount, announce=announce
-        )
+    # 蛞蝓猫敏捷格挡：只在"造成伤害"(apply_damage)时生效，"失去生命"不触发。
+    if damage > 0 and game_state.character_ids.get(target_player_id) == 4:
         agility = int(target.special.get("agility", 0))
         if agility > 0:
             # 敏捷格挡伤害，但只在实际扣血时才消耗等量敏捷。
             # 2敏捷防2伤 → 0扣血 → 敏捷不变；2敏捷防3伤 → 扣1血 → 敏捷-1。
-            blocked = min(agility, amount)
-            amount -= blocked
-            life_lost = amount  # 溢出部分=实际扣血
+            blocked = min(agility, damage)
+            damage -= blocked
+            life_lost = damage  # 溢出部分=实际扣血
             agility_loss = min(agility, life_lost)
             if agility_loss > 0:
                 target.special["agility"] = agility - agility_loss
@@ -367,8 +396,59 @@ def lose_life(game_state, amount, target_player_id, announce=None):
                     f"玩家{target_player_id}的敏捷完全格挡{blocked}点伤害"
                     f"（敏捷不消耗，仍为{agility}）"
                 )
+    return lose_life(game_state, damage, target_player_id, announce=announce)
+
+
+def lose_life(game_state, amount, target_player_id, announce=None):
+    """Lose life directly — bypasses defence, can't reduce damage, but still
+    consumes agility equal to the life lost.
+
+    Use this for effects that make the player "失去生命" (lose life) rather
+    than "受到伤害" (take damage).  Centipede immunity still applies.
+
+    播报顺序（Bug 6.40/6.41）：
+      1. 先结算蜈蚣免伤 → 扣敏捷 → 扣血 → **立即播报"失去X点生命（敏捷-Y，剩余Z）"**
+      2. 再结算Karma回血（如果health≤0） → 播报"消耗1点业力重返雨中"
+    这样用户先看到损失再看到复原，不会出现"报了损失但实际没扣 / Karma复原后反算actual_loss为负而跳过播报"。
+    生命值播报数值 = amount（蜈蚣免伤后的失去生命效果值），不是扣完Karma再反算的net。
+    """
+    target = game_state.players[target_player_id]
+    amount = max(0, amount)
+    if amount == 0:
+        return 0
+    agility_loss = 0
+    final_agility = 0
+    is_slugcat = game_state.character_ids.get(target_player_id) == 4
+    if is_slugcat:
+        # 烈焰蜈蚣免伤（仍对失去生命生效）
+        from card_duel.cards.slugcat import check_centipede_immunity
+
+        amount = check_centipede_immunity(
+            game_state, target_player_id, amount, announce=announce
+        )
+        if amount <= 0:
+            return 0
+        # 失去生命不防伤害，但消耗等量敏捷（敏捷掉的数值=失去生命的数值）
+        agility = int(target.special.get("agility", 0))
+        if agility > 0 and amount > 0:
+            agility_loss = min(agility, amount)
+            final_agility = agility - agility_loss
+            target.special["agility"] = final_agility
+        else:
+            final_agility = agility
+    # Apply HP loss
     target.health -= amount
-    if game_state.character_ids.get(target_player_id) == 4 and target.health <= 0:
+    # Announce loss immediately (BEFORE karma revive)
+    if announce is not None:
+        if is_slugcat and agility_loss > 0:
+            announce(
+                f"玩家{target_player_id}失去{amount}点生命"
+                f"（敏捷-{agility_loss}，剩余{final_agility}）"
+            )
+        else:
+            announce(f"玩家{target_player_id}失去{amount}点生命")
+    # Karma revive (runs AFTER loss announcement so order is correct in log)
+    if is_slugcat and target.health <= 0:
         from card_duel.cards.slugcat import resolve_slugcat_karma
 
         resolve_slugcat_karma(game_state, target_player_id, announce=announce)
@@ -607,8 +687,17 @@ def play_pack_god_card(game_state, source_player_id, target_player_id, announce,
         selected = select_hand_cards_in_place(game_state, "背包之神", exclude_id=4)
         if selected is None:
             return 0
+        from card_duel.cards.slugcat_data import SLUGCAT_CHARACTER_ID as _SCID
+        source_player = game_state.players[source_player_id]
         for hand_index in selected:
-            game_state.draw_pile.append(game_state.hand_cards[hand_index])
+            card_id = game_state.hand_cards[hand_index]
+            # 路由见闻牌回discovery_pool，其他回draw_pile
+            if 27 <= card_id <= 35 and game_state.character_ids.get(source_player_id) == _SCID:
+                pool = source_player.special.setdefault("discovery_pool", [])
+                pool.insert(0, card_id)
+            else:
+                # 弃牌插底，避免刚弃的牌下一回合又被抽到
+                game_state.draw_pile.insert(0, card_id)
             game_state.hand_cards[hand_index] = -1
         _refresh_hand(game_state)
 
@@ -799,7 +888,8 @@ def play_black_flash_card(game_state, source_player_id, target_player_id, announ
             ignore_cost=True,
         )
         if card_id != 13 and card_id != 10:
-            game_state.draw_pile.append(card_id)
+            # 黑闪打出的牌用完插底，不立即再次抽到。
+            game_state.draw_pile.insert(0, card_id)
         return 1
     else:
         _show_insufficient_energy()
@@ -815,8 +905,17 @@ def play_burnt_offering_card(game_state, source_player_id, target_player_id, ann
         selected = select_hand_cards_in_place(game_state, "燔祭", exclude_id=16)
         if selected is None:
             return 0
+        from card_duel.cards.slugcat_data import SLUGCAT_CHARACTER_ID as _SCID2
+        src_player = game_state.players[source_player_id]
         for hand_index in selected:
-            game_state.draw_pile.append(game_state.hand_cards[hand_index])
+            card_id = game_state.hand_cards[hand_index]
+            # 路由见闻牌回discovery_pool，其他回draw_pile
+            if 27 <= card_id <= 35 and game_state.character_ids.get(source_player_id) == _SCID2:
+                pool = src_player.special.setdefault("discovery_pool", [])
+                pool.insert(0, card_id)
+            else:
+                # 弃牌插底，避免刚弃的牌下一回合又被抽到
+                game_state.draw_pile.insert(0, card_id)
             game_state.hand_cards[hand_index] = -1
         _refresh_hand(game_state)
 

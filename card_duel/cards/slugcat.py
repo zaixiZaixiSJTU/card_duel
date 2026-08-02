@@ -54,6 +54,8 @@ def initialize_slugcat_player(player):
             "immune_next_attack": 0,
             "attack_lock": 0,
             "last_dead_creature_health": 0,
+            # 面条蝇每回合免疫1次攻击：独立字段跟踪，避免与血量混淆
+            "noodle_fly_immunity_used": False,
             "electric_penalty_this_turn": 0,
             "pending_insertions": [],
             # noodle_cost_stacks: per-instance cost increase for 小面条 in hand,
@@ -68,6 +70,9 @@ def initialize_slugcat_player(player):
             },
             # 趴下标记：本回合随机生物优先加入对方手牌
             "redirect_creatures_to_opponent": False,
+            # 见闻牌打出折扣：按card_id独立计数，打出一张27只让27下次便宜，
+            # 不影响28/29等其他见闻牌。回合开始清零。
+            "discovery_discount": {},
         }
     )
 
@@ -163,6 +168,11 @@ def play_slugcat_card(
     player.special["last_card_id"] = card_id
     if card_id not in SLUGCAT_ATTACK_ITEM_IDS and player.special.get("attack_lock", 0):
         player.special["attack_lock"] -= 1
+    # 每打出一张见闻牌，该card_id下次成本-1（按card_id独立计数，不共通）。
+    # 弃牌阶段弃掉见闻牌不增加折扣（此处仅在成功打出时累加）。
+    if card_id in SLUGCAT_DISCOVERY_IDS:
+        discounts = player.special.setdefault("discovery_discount", {})
+        discounts[card_id] = discounts.get(card_id, 0) + 1
     return True
 
 
@@ -192,8 +202,12 @@ def _effective_cost(game_state, player_id, card_id):
     player = game_state.players[player_id]
     if card_id == 7 and player.special.get("last_card_id") in (8, 9):
         cost = max(0, cost - 1)
-    if card_id in SLUGCAT_DISCOVERY_IDS and _hand_count(game_state, 26):
-        cost = max(0, cost - 1)
+    # 见闻牌打出折扣：按card_id独立计数（打出27只让27下次便宜，不影响28等）
+    if card_id in SLUGCAT_DISCOVERY_IDS:
+        discounts = player.special.get("discovery_discount", {})
+        discount = discounts.get(card_id, 0)
+        if discount > 0:
+            cost = max(0, cost - discount)
     if card_id == 16:
         stacks = player.special.get("noodle_cost_stacks", [])
         if stacks:
@@ -245,6 +259,16 @@ def _play_attack(card_id, base_damage, inserted_effect=None):
             source.special[embedded_key] = max(
                 0, source.special.get(embedded_key, 0) - 1
             )
+            # 拔出电矛后立即恢复本回合因该电矛扣减的力量（每根-2），
+            # 并同步更新 electric_penalty_this_turn，避免回合结束重复恢复
+            # 或残留导致下回合仍受影响。
+            if card_id == 50:
+                penalty = source.special.get("electric_penalty_this_turn", 0)
+                if penalty > 0:
+                    source.strength += 2
+                    source.special["electric_penalty_this_turn"] = max(
+                        0, penalty - 2
+                    )
             game_state.draw_pile.append(normal_id)
             announce(
                 f"玩家{source_id}拔出1根{'钢筋' if card_id == 49 else '电矛'}"
@@ -261,18 +285,17 @@ def _play_attack(card_id, base_damage, inserted_effect=None):
         # Let attacker choose target if any creature exists
         target_obj = choose_attack_target(game_state, source_id, target_id, announce)
         if target_obj is None or target_obj["type"] == "player":
+            announce(f"玩家{source_id}使用{spec_name}攻击玩家{target_id}")
             health_loss = combat.apply_damage(
                 game_state, damage, target_id, announce=announce
-            )
-            announce(
-                f"玩家{source_id}使用{spec_name}"
-                f"（造成{damage}点伤害）"
             )
             if health_loss > 0 and inserted_effect:
                 inserted_effect(game_state, source_id, target_id, announce)
         else:
             target_name = target_obj["name"]
             creature_owner = target_obj.get("player_id", target_id)
+            # 攻击声明必须在伤害结算前，保证日志顺序正确
+            announce(f"玩家{source_id}使用{spec_name}攻击{target_name}")
             if target_obj["type"] == "hand":
                 _damage_hand_creature(
                     game_state, creature_owner, target_obj["card_id"],
@@ -290,7 +313,6 @@ def _play_attack(card_id, base_damage, inserted_effect=None):
                         game_state, creature_owner, idx, damage, announce,
                         attacker_id=source_id,
                     )
-            announce(f"玩家{source_id}使用{spec_name}攻击{target_name}")
         return True
 
     return effect
@@ -315,7 +337,7 @@ def _insert_explosive_spear(game_state, _source_id, target_id, announce):
     game_state.players[target_id].special["pending_discards"] = (
         game_state.players[target_id].special.get("pending_discards", 0) + 1
     )
-    announce(f"炸矛穿透：玩家{target_id}失去10点生命并需随机弃1张牌")
+    announce(f"炸矛穿透：玩家{target_id}失去10点生命并随机弃1张牌")
 
 
 def _insert_electric_spear(game_state, source_id, target_id, announce):
@@ -391,7 +413,7 @@ def _play_crouch(game_state, source_id, target_id, announce, ignore_cost):
     player.special["redirect_creatures_to_opponent"] = True
     announce(
         f"玩家{source_id}趴下，取消全部敏捷和动能，"
-        f"本回合随机加入的生物将优先加入玩家{target_id}手牌"
+        f"本回合猫闯祸生成的生物将进入玩家{target_id}手牌"
     )
     return True
 
@@ -427,6 +449,8 @@ def _play_forage(game_state, source_id, _target_id, announce, ignore_cost):
     player = game_state.players[source_id]
     gained = math.ceil(player.special.get("last_dead_creature_health", 0) / 5)
     player.special["satiety"] += gained
+    # 觅食后清零累计死亡血量，避免重复计算
+    player.special["last_dead_creature_health"] = 0
     combat.draw_cards(game_state, 1)
     announce(f"玩家{source_id}觅食，获得{gained}点饱食度并抽1张牌")
     return True
@@ -434,70 +458,58 @@ def _play_forage(game_state, source_id, _target_id, announce, ignore_cost):
 
 def _play_run_away(game_state, source_id, target_id, announce, ignore_cost):
     player = game_state.players[source_id]
-    amount = _choose_x_cost(player, ignore_cost)
-    if amount is None:
-        return False
-    player.energy -= amount if not ignore_cost else 0
+    # X费牌：耗尽全部剩余能量，抽X-1张见闻牌
+    if ignore_cost:
+        amount = 0
+    else:
+        amount = player.energy
+        player.energy = 0
+    draw_count = max(0, amount - 1)
     _remove_all_creatures_from_hand(game_state)
     discovery_pool = player.special.setdefault("discovery_pool", [27])
     seen = set(player.special.get("seen_discoveries", []))
     obtained = 0
-    for _ in range(amount):
-        if not discovery_pool:
-            break
-        # 优先抽未打出过的见闻牌，其次才抽已打出过的
-        unseen_idx = next(
-            (i for i, c in enumerate(discovery_pool) if c not in seen), None
-        )
-        idx = unseen_idx if unseen_idx is not None else 0
-        card_id = discovery_pool.pop(idx)
-        if combat.add_card_to_hand(game_state, card_id):
-            obtained += 1
-    # Wasted energy (discovery pool exhausted) is simply lost — no creatures.
-    wasted = amount - obtained
-    combat.draw_cards(game_state, 1)
-    if wasted:
-        announce(
-            f"玩家{source_id}跑路，获得{obtained}张见闻牌"
-            f"（{wasted}点能量因见闻池耗尽而浪费，额外抽1张牌）"
-        )
-    else:
-        announce(
-            f"玩家{source_id}跑路，获得{obtained}张见闻牌，额外抽1张牌"
-        )
-    return True
-
-
-def _choose_x_cost(player, ignore_cost):
-    if "next_x_cost" in player.special:
-        return max(0, min(player.energy, int(player.special.pop("next_x_cost"))))
-    if ignore_cost:
-        return 0
-    maximum = max(0, player.energy)
-    value = sg.popup_get_text(
-        f"投入能量（0-{maximum}）",
-        default_text=str(maximum),
-        title="猫跑路了",
-        keep_on_top=True,
+    for _ in range(draw_count):
+        if discovery_pool:
+            # 优先抽未打出过的见闻牌，其次才抽已打出过的
+            unseen_idx = next(
+                (i for i, c in enumerate(discovery_pool) if c not in seen), None
+            )
+            idx = unseen_idx if unseen_idx is not None else 0
+            card_id = discovery_pool.pop(idx)
+        else:
+            # 见闻池耗尽，从抽牌堆抽普通牌
+            combat.draw_cards(game_state, 1)
+            card_id = None
+        if card_id is not None:
+            if combat.add_card_to_hand(game_state, card_id):
+                obtained += 1
+        else:
+            obtained += 1  # draw_cards 已直接加入手牌
+    announce(
+        f"玩家{source_id}跑路，耗尽{amount}点能量，获得{obtained}张牌"
     )
-    if value is None:
-        return None
-    try:
-        return max(0, min(maximum, int(value)))
-    except ValueError:
-        return None
+    return True
 
 
 def _play_trouble(game_state, source_id, target_id, announce, ignore_cost):
     if not _pay_cost(game_state, source_id, 15, announce, ignore_cost):
         return False
-    creature_id = random.choice(SLUGCAT_CREATURE_IDS)
-    # 趴下标记：随机生物优先加入对方手牌
+    # 猫闯祸从"当前场景生物池"发牌，而非所有生物随机
+    # unlocked_creature_counts 的 keys 就是当前场景解锁的生物ID列表
     player = game_state.players[source_id]
+    creature_pool = list(player.special.get("unlocked_creature_counts", {}).keys())
+    # 确保 key 为 int（网络同步后可能是 str）
+    creature_pool = [int(cid) for cid in creature_pool]
+    if not creature_pool:
+        # Fallback: 当前场景无生物时，从基础生物保底
+        creature_pool = [16, 20, 25]
+    creature_id = random.choice(creature_pool)
+    # 趴下标记：随机生物优先加入对方手牌
     dest_id = target_id if player.special.get("redirect_creatures_to_opponent") else source_id
     _add_creature_to_hand(game_state, dest_id, creature_id, owner_id=source_id)
-    combat.draw_cards(game_state, 1)
-    announce(f"玩家{source_id}闯祸，{SLUGCAT_SPECS_BY_ID[creature_id].name}加入了玩家{dest_id}手牌，抽1张牌")
+    combat.draw_cards(game_state, 2)
+    announce(f"玩家{source_id}闯祸，{SLUGCAT_SPECS_BY_ID[creature_id].name}加入了玩家{dest_id}手牌，抽2张牌")
     return True
 
 
@@ -544,23 +556,29 @@ def _play_discovery(card_id):
             player.special["karma_max"] = min(
                 MAX_KARMA, player.special.get("karma_max", 3) + 1
             )
-        # 生物牌（16-26）不进入抽牌堆（不可被抽取），但记入 unlocked_creature_counts
-        # 供抽牌堆查看器展示为"已解锁"状态。
+        # 进入新场景：放弃旧场景的物品牌堆和生物，只加新场景的内容
+        # 1. 从抽牌堆移除所有物品牌（保留技能、形态、见闻牌）
+        game_state.draw_pile = [
+            cid for cid in game_state.draw_pile
+            if cid in SLUGCAT_SPECS_BY_ID
+            and SLUGCAT_SPECS_BY_ID[cid].card_type != "物品"
+        ]
+        # 2. 重置已解锁生物（清空旧的，只保留新场景的）
         unlocked_creatures = player.special.setdefault(
             "unlocked_creature_counts", {}
         )
+        unlocked_creatures.clear()
+        # 3. 加入新场景的物品和生物
         for new_card_id, count in DISCOVERY_CONTENTS[card_id].items():
             if 16 <= new_card_id <= 26:
-                unlocked_creatures[new_card_id] = (
-                    unlocked_creatures.get(new_card_id, 0) + count
-                )
+                unlocked_creatures[new_card_id] = count
             else:
                 game_state.draw_pile.extend([new_card_id] * count)
         random.shuffle(game_state.draw_pile)
         _unlock_adjacent_discovery(player, card_id)
         announce(
             f"玩家{source_id}探索{SLUGCAT_SPECS_BY_ID[card_id].name}，"
-            "牌组获得新的物品与生物"
+            "放弃旧场景的物品与生物，获得新场景的物品与生物"
         )
         return True
 
@@ -571,10 +589,10 @@ def _unlock_adjacent_discovery(player, card_id):
     pool = player.special.setdefault("discovery_pool", [])
     seen = set(player.special.setdefault("seen_discoveries", []))
     adjacent = DISCOVERY_ADJACENCY[card_id]
-    unseen = [candidate for candidate in adjacent if candidate not in seen]
-    candidates = unseen or list(adjacent)
-    selected = min(candidates, key=lambda candidate: pool.count(candidate))
-    pool.append(selected)
+    # 解锁全部未见过的相邻见闻，加到pool顶端（列表头部）
+    new_ones = [c for c in adjacent if c not in seen and c not in pool]
+    for candidate in reversed(new_ones):
+        pool.insert(0, candidate)
 
 
 def _play_form(card_id):
@@ -598,7 +616,6 @@ def _play_smoke_fruit(game_state, source_id, _target_id, announce, ignore_cost):
     target = choose_creature_target(game_state, card_id_filter=22)
     if target is not None:
         _kill_creature_at(game_state, target, announce)
-        announce("烟雾秒杀了烈焰蜈蚣")
     return True
 
 
@@ -619,7 +636,7 @@ def _play_flash_fruit(game_state, source_id, target_id, announce, ignore_cost):
         _add_creature_threat(
             game_state, target_id, creature_id, owner_id=source_id
         )
-        announce(f"闪光果将{SLUGCAT_SPECS_BY_ID[creature_id].name}赶向对手")
+        announce(f"闪光果将{SLUGCAT_SPECS_BY_ID[creature_id].name}赶向玩家{target_id}")
     else:
         game_state.players[target_id].special["attack_lock"] = 2
         announce(f"玩家{target_id}被致盲，需先打出两张非攻击牌")
@@ -654,13 +671,14 @@ def _play_bubble_fruit(game_state, source_id, target_id, announce, ignore_cost):
 
     target_obj = choose_attack_target(game_state, source_id, target_id, announce)
     if target_obj is None or target_obj["type"] == "player":
+        announce(f"玩家{source_id}把泡水果当作石子攻击玩家{target_id}")
         health_loss = combat.apply_damage(
             game_state, damage, target_id, announce=announce
         )
-        announce(f"玩家{source_id}把泡水果当作石子（造成{damage}点伤害）")
     else:
         target_name = target_obj["name"]
         creature_owner = target_obj.get("player_id", target_id)
+        announce(f"玩家{source_id}把泡水果当作石子攻击{target_name}")
         if target_obj["type"] == "hand":
             _damage_hand_creature(
                 game_state, creature_owner, target_obj["card_id"],
@@ -678,7 +696,6 @@ def _play_bubble_fruit(game_state, source_id, target_id, announce, ignore_cost):
                     game_state, creature_owner, idx, damage, announce,
                     attacker_id=source_id,
                 )
-        announce(f"玩家{source_id}把泡水果当作石子攻击{target_name}")
     return True
 
 
@@ -688,8 +705,18 @@ def _play_white_pearl(game_state, source_id, _target_id, announce, ignore_cost):
     if _remove_hand_creature(game_state, 25) is not None:
         carried_item = random.choices((1, 3, 4, 5), weights=(6, 1, 2, 1), k=1)[0]
         combat.add_card_to_hand(game_state, carried_item)
-        game_state.players[source_id].special["last_dead_creature_health"] = 5
-        announce("白珍珠换来了拾荒者携带的物品")
+        prev = game_state.players[source_id].special.get("last_dead_creature_health", 0)
+        game_state.players[source_id].special["last_dead_creature_health"] = prev + 5
+        announce(f"白珍珠换来了拾荒者携带的物品")
+        # 掉落物为私有手牌信息，仅本地显示
+        try:
+            from card_duel.ui.network import colored_announce
+            colored_announce(
+                game_state,
+                f"  └ 获得：{SLUGCAT_SPECS_BY_ID[carried_item].name}"
+            )
+        except Exception:
+            pass
     else:
         game_state.players[source_id].special["scavenger_attraction"] = 1
         announce("白珍珠正在吸引拾荒者")
@@ -726,19 +753,23 @@ def _on_turn_start(context):
         player.special["agility"] = 0
         player.special["momentum"] = 0
         player.special["redirect_creatures_to_opponent"] = False
+        # 见闻牌折扣每回合重置（按card_id独立计数）
+        player.special["discovery_discount"] = {}
+        # 电矛插入：回合开始扣力量（本回合攻击伤害降低），回合结束恢复
+        spears = player.special.get("embedded_electric_spears", 0)
+        if spears:
+            penalty = spears * 2
+            player.strength -= penalty
+            player.special["electric_penalty_this_turn"] = penalty
+            context.announce(f"电矛使玩家{player_id}本回合力量-{penalty}")
         grass_count = _hand_count(game_state, 42)
         if grass_count:
             player.special["satiety"] += grass_count * 2
             context.announce(f"蝠蝇草提供{grass_count * 2}点饱食度")
-        # Reset noodle fly immunity (negative HP = used immunity)
-        fly_health = player.special.get("creature_health", {}).get(17, [])
-        player.special["creature_health"][17] = [abs(h) for h in fly_health]
-        # Also reset in threats
-        for t in player.special.get("creature_threats", []):
-            if t["card_id"] == 17:
-                t["health"] = abs(t["health"])
+        # Reset noodle fly immunity (独立字段，不再用负血量标记)
+        player.special["noodle_fly_immunity_used"] = False
 
-    _resolve_pending_discards(game_state, player)
+    # 炸矛弃牌已在 _receive_game_state_payload 中立即结算，不再延迟到回合开始
 
 
 def _on_turn_end(context):
@@ -758,38 +789,56 @@ def _on_turn_end(context):
         player.special["momentum"] = 0
 
 
-def _resolve_pending_discards(game_state, player):
+def _resolve_pending_discards(game_state, player, announce=None):
+    """Resolve pending random discards (e.g. from 炸矛穿透).
+
+    Cards are routed to the correct return pile: discovery cards (27-35) go
+    back to ``player.special["discovery_pool"]``; everything else goes to
+    ``game_state.draw_pile``.  The discarded card name is announced so the
+    players know what was randomly removed.
+    """
+    from card_duel.cards.slugcat_data import (
+        SLUGCAT_DISCOVERY_IDS, SLUGCAT_SPECS_BY_ID,
+    )
+
     pending = player.special.get("pending_discards", 0)
     while pending > 0 and game_state.hand_size > 0:
         indexes = _occupied_hand_indexes(game_state)
         if not indexes:
             break
         hand_index = random.choice(indexes)
-        game_state.draw_pile.append(game_state.hand_cards[hand_index])
+        card_id = game_state.hand_cards[hand_index]
+        # Route to correct pile: discovery -> discovery_pool, else draw_pile.
+        # 弃牌统一插底，避免刚弃的牌下一回合又被抽到。
+        if card_id in SLUGCAT_DISCOVERY_IDS:
+            pool = player.special.setdefault("discovery_pool", [])
+            pool.insert(0, card_id)
+        else:
+            game_state.draw_pile.insert(0, card_id)
+        if announce:
+            spec = SLUGCAT_SPECS_BY_ID.get(card_id)
+            name = spec.name if spec else f"#{card_id}"
+            announce(f"随机弃掉：{name}")
         game_state.hand_cards[hand_index] = -1
         pending -= 1
     player.special["pending_discards"] = pending
 
 
 def _resolve_inserted_items(game_state, player_id, announce):
-    """回合结束时结算插入物的流血效果（钢筋扣血、电矛扣力量）。
+    """回合结束时结算插入物的流血效果（钢筋扣血）。
 
+    电矛的力量扣减已在回合开始时应用，此处仅结算钢筋流血。
     拔出不再自动执行——被插入的钢筋/电矛在手牌中像普通卡一样占据位置，
     玩家可以在出牌阶段主动打出它们来"拔出"（花1能量，返回牌堆，体内减1）。
+
+    播报：先说明原因（钢筋流血），再由lose_life统一输出"失去X点生命"承接。
     """
     player = game_state.players[player_id]
 
     rods = player.special.get("embedded_steel_rods", 0)
     if rods:
+        announce(f"{rods}根钢筋在体内造成流血")
         combat.lose_life(game_state, rods, player_id, announce=announce)
-        announce(f"{rods}根钢筋使玩家{player_id}失去{rods}点生命")
-
-    spears = player.special.get("embedded_electric_spears", 0)
-    if spears:
-        penalty = spears * 2
-        player.strength -= penalty
-        player.special["electric_penalty_this_turn"] = penalty
-        announce(f"电矛使玩家{player_id}本回合力量-{penalty}")
 
 
 def _resolve_creatures(game_state, player_id, announce):
@@ -815,9 +864,9 @@ def _resolve_creatures(game_state, player_id, announce):
     if has_lizard:
         while _hand_count(game_state, 16) > 0:
             owner = _remove_hand_creature(game_state, 16)
-            announce("蜥蜴吃掉了小面条")
             # Noodle eaten → spawn noodle fly
             _add_creature_to_hand(game_state, player_id, 17, owner_id=player_id)
+            announce(f"蜥蜴吃掉了小面条，引来面条蝇")
         # Remove noodle threats
         threats = [t for t in threats if t["card_id"] != 16]
 
@@ -875,29 +924,32 @@ def _resolve_creatures(game_state, player_id, announce):
 
     # --- Damage phase ---
     for creature_id in hand_creatures:
-        damage = _creature_damage(player, creature_id, centipede_count)
+        damage = _creature_damage(player, creature_id, centipede_count, announce=announce, player_id=player_id)
         if damage:
             combat.apply_damage(
                 game_state, damage, player_id, announce=announce
             )
-            announce(
-                f"{SLUGCAT_SPECS_BY_ID[creature_id].name}"
-                f"对玩家{player_id}造成{damage}点伤害"
-            )
+            # 拾荒者(25)的播报已在_creature_damage中含物品名，不重复播报
+            if creature_id != 25:
+                announce(
+                    f"{SLUGCAT_SPECS_BY_ID[creature_id].name}"
+                    f"对玩家{player_id}造成{damage}点伤害"
+                )
         _on_creature_turn_end_hand(game_state, player_id, creature_id, announce)
 
     for i in range(len(threats) - 1, -1, -1):
         threat = threats[i]
         creature_id = threat["card_id"]
-        damage = _creature_damage(player, creature_id, centipede_count)
+        damage = _creature_damage(player, creature_id, centipede_count, announce=announce, player_id=player_id)
         if damage:
             combat.apply_damage(
                 game_state, damage, player_id, announce=announce
             )
-            announce(
-                f"{SLUGCAT_SPECS_BY_ID[creature_id].name}"
-                f"对玩家{player_id}造成{damage}点伤害"
-            )
+            if creature_id != 25:
+                announce(
+                    f"{SLUGCAT_SPECS_BY_ID[creature_id].name}"
+                    f"对玩家{player_id}造成{damage}点伤害"
+                )
         _on_creature_turn_end_threat(game_state, player_id, threat, announce)
 
     # --- Centipede proliferation ---
@@ -905,11 +957,14 @@ def _resolve_creatures(game_state, player_id, announce):
 
 
 def _on_creature_turn_end_hand(game_state, player_id, creature_id, announce):
-    """Per-turn effects for hand creatures (non-damage)."""
+    """Per-turn effects for hand creatures (non-damage).
+
+    射线虫(18)：回合结束存活时加入一张秃鹫（描述："加入一张秃鹫"）。
+    每次被转移后在新持有者回合结束时再次触发（即"每次被移动都能再加一次"）。
+    """
     if creature_id == 18:
-        # 射线虫: summon vulture at turn end
-        _add_creature_threat(game_state, player_id, 19, owner_id=player_id)
-        announce(f"射线虫引来秃鹫")
+        _add_creature_threat(game_state, player_id, 19, owner_id=player_id, announce=announce)
+        announce(f"射线虫存活至回合结束，引来一张秃鹫")
 
 
 def _on_creature_turn_end_threat(game_state, player_id, threat, announce):
@@ -948,10 +1003,7 @@ def _resolve_centipede_spread(game_state, player_id, announce):
     p2_count = p2_hand + p2_threat
 
     if p1_count == 0 and p2_count == 0:
-        target = player_id if player_id in (1, 2) else 1
-        _add_creature_to_hand(game_state, target, 22, owner_id=target)
-        announce("烈焰蜈蚣出现在你手牌中")
-        return
+        return  # 场上无蜈蚣，不增殖
     if p1_count == p2_count:
         return  # 相等不增殖
     target = 1 if p1_count > p2_count else 2
@@ -985,7 +1037,7 @@ def check_centipede_immunity(game_state, target_player_id, amount, announce=None
     return amount
 
 
-def _creature_damage(player, creature_id, centipede_count):
+def _creature_damage(player, creature_id, centipede_count, announce=None, player_id=None):
     if creature_id == 17:
         return 5
     if creature_id == 19:
@@ -995,7 +1047,11 @@ def _creature_damage(player, creature_id, centipede_count):
         key = str(creature_id)
         if waits.get(key, 0) == 0:
             waits[key] = 1
+            if announce and player_id is not None:
+                announce(f"绿蜥蜴静止中，下回合将造成5点伤害")
             return 0
+        if announce and player_id is not None:
+            announce(f"绿蜥蜴苏醒，对玩家{player_id}造成5点伤害")
         return 5
     if creature_id == 21:
         return 3
@@ -1006,11 +1062,20 @@ def _creature_damage(player, creature_id, centipede_count):
     if creature_id == 24:
         return 15
     if creature_id == 25:
-        return random.choices((2, 10, 3, 3), weights=(6, 1, 2, 1), k=1)[0]
+        # 拾荒者：随机携带攻击物品并对持有者使用（造成伤害）
+        # (物品ID, 伤害) 对应 钢筋(2)/炸药(10)/炸矛(3)/电矛(3)
+        item_choices = ((1, 2), (3, 10), (4, 3), (5, 3))
+        item_id, dmg = random.choices(
+            item_choices, weights=(6, 1, 2, 1), k=1
+        )[0]
+        if announce and player_id is not None:
+            item_name = SLUGCAT_SPECS_BY_ID[item_id].name
+            announce(f"拾荒者携带{item_name}对玩家{player_id}造成{dmg}点伤害")
+        return dmg
     return 0
 
 
-def _add_creature_threat(game_state, player_id, creature_id, owner_id=None):
+def _add_creature_threat(game_state, player_id, creature_id, owner_id=None, announce=None):
     """Add a creature as a threat (no hand slot) with HP and owner tracking."""
     if owner_id is None:
         owner_id = player_id
@@ -1022,6 +1087,10 @@ def _add_creature_threat(game_state, player_id, creature_id, owner_id=None):
             "owner": owner_id,
         }
     )
+    if announce is not None:
+        name = SLUGCAT_SPECS_BY_ID.get(creature_id)
+        name_str = name.name if name else f"#{creature_id}"
+        announce(f"{name_str}进入玩家{player_id}的威胁区")
 
 
 def _add_creature_to_hand(game_state, player_id, card_id, owner_id=None, noodle_cost=0):
@@ -1087,6 +1156,17 @@ def _remove_hand_creature(game_state, card_id, player_id=None):
     return player_id
 
 
+def _refresh_after_creature_damage(game_state, target_player_id):
+    """被攻击后刷新手牌显示，让生物血量变化即时可见。"""
+    if target_player_id == game_state.local_player_id:
+        try:
+            from card_duel.ui.network import refresh_cards
+            refresh_cards(game_state)
+            game_state.window.refresh()
+        except Exception:
+            pass
+
+
 def _damage_hand_creature(game_state, target_player_id, card_id, damage, announce, attacker_id=None):
     """Deal damage to the first hand creature of given type. Return True if killed."""
     player = game_state.players[target_player_id]
@@ -1094,12 +1174,15 @@ def _damage_hand_creature(game_state, target_player_id, card_id, damage, announc
     if not health_list:
         return False
     # Noodle fly (17) is immune to first attack each turn.
-    if card_id == 17 and health_list[0] > 0:
-        health_list[0] = -abs(health_list[0])  # mark as used immunity
+    # 使用独立字段跟踪免疫，不修改血量（避免与HP混淆导致后续攻击秒杀）
+    if card_id == 17 and not player.special.get("noodle_fly_immunity_used", False):
+        player.special["noodle_fly_immunity_used"] = True
         announce(f"面条蝇免疫了本次攻击")
         return False
     health_list[0] -= damage
     announce(f"对{SLUGCAT_SPECS_BY_ID[card_id].name}造成{damage}点伤害（剩余{max(0, health_list[0])}）")
+    # 被打反馈：刷新手牌让血量变化即时可见
+    _refresh_after_creature_damage(game_state, target_player_id)
     # 烈焰蜥蜴反伤3
     if card_id == 23 and attacker_id is not None:
         combat.apply_damage(game_state, 3, attacker_id, announce=announce)
@@ -1121,12 +1204,15 @@ def _damage_threat_creature(game_state, target_player_id, index, damage, announc
         return False
     threat = threats[index]
     card_id = threat["card_id"]
-    if card_id == 17 and threat["health"] > 0:
-        threat["health"] = -abs(threat["health"])
+    # 面条蝇免疫：使用独立字段，不修改血量
+    if card_id == 17 and not player.special.get("noodle_fly_immunity_used", False):
+        player.special["noodle_fly_immunity_used"] = True
         announce(f"面条蝇免疫了本次攻击")
         return False
     threat["health"] -= damage
     announce(f"对{SLUGCAT_SPECS_BY_ID[card_id].name}造成{damage}点伤害（剩余{max(0, threat['health'])}）")
+    # 被打反馈：刷新手牌让血量变化即时可见
+    _refresh_after_creature_damage(game_state, target_player_id)
     # 烈焰蜥蜴反伤3
     if card_id == 23 and attacker_id is not None:
         combat.apply_damage(game_state, 3, attacker_id, announce=announce)
@@ -1139,27 +1225,32 @@ def _damage_threat_creature(game_state, target_player_id, index, damage, announc
     return False
 
 
-def _on_creature_death(game_state, player_id, card_id, owner_id, announce):
+def _on_creature_death(game_state, player_id, card_id, owner_id, announce, cause="被击杀"):
     """Trigger death effects and return the creature card to owner's draw pile."""
     base_health = CREATURE_BASE_HEALTH.get(card_id, 0)
-    game_state.players[player_id].special["last_dead_creature_health"] = base_health
-    announce(f"{SLUGCAT_SPECS_BY_ID[card_id].name}被击杀（{base_health}血）")
+    # 累加死亡生物血量，供觅食按总和计算饱食度（如5+1=6，ceil(6/5)=2）
+    prev = game_state.players[player_id].special.get("last_dead_creature_health", 0)
+    game_state.players[player_id].special["last_dead_creature_health"] = prev + base_health
+    announce(f"{SLUGCAT_SPECS_BY_ID[card_id].name}{cause}（{base_health}血）")
     # Death effects
     if card_id == 16:
         # 小面条死亡 → 加入面条蝇
         _add_creature_to_hand(game_state, player_id, 17, owner_id=player_id)
         announce(f"小面条死亡，引来面条蝇")
-    elif card_id == 18:
-        # 射线虫死亡 → 加入秃鹫
-        _add_creature_threat(game_state, player_id, 19, owner_id=player_id)
-        announce(f"射线虫死亡，引来秃鹫")
     elif card_id == 25:
-        # 拾荒者死亡 → 获得其物品
+        # 拾荒者死亡 → 获得其物品（物品名仅本地可见，避免泄露手牌）
         carried_item = random.choices((1, 3, 4, 5), weights=(6, 1, 2, 1), k=1)[0]
         combat.add_card_to_hand(game_state, carried_item)
-        announce(
-            f"拾荒者被击杀，掉落{SLUGCAT_SPECS_BY_ID[carried_item].name}"
-        )
+        announce(f"拾荒者被击杀，掉落了携带的物品")
+        # 掉落物为私有手牌信息，仅本地显示
+        try:
+            from card_duel.ui.network import colored_announce
+            colored_announce(
+                game_state,
+                f"  └ 掉落物：{SLUGCAT_SPECS_BY_ID[carried_item].name}"
+            )
+        except Exception:
+            pass
     # Return card to owner's draw pile.  Creature cards are Slugcat-specific:
     # only add to the local draw_pile when the local player IS the owner and
     # is a Slugcat.  If the owner is the remote player, queue the card via
@@ -1264,21 +1355,21 @@ def _kill_creature_at(game_state, target, announce):
         owner_id = _remove_hand_creature(game_state, card_id)
         if owner_id is None:
             owner_id = local_id
-        _on_creature_death(game_state, local_id, card_id, owner_id, announce)
+        _on_creature_death(game_state, local_id, card_id, owner_id, announce, cause="被秒杀")
     elif location == "own_threat":
         threats = game_state.players[local_id].special.get("creature_threats", [])
         idx = next((i for i, t in enumerate(threats) if int(t["card_id"]) == card_id), -1)
         if idx >= 0:
             threat = threats.pop(idx)
             owner_id = threat.get("owner", local_id)
-            _on_creature_death(game_state, local_id, card_id, owner_id, announce)
+            _on_creature_death(game_state, local_id, card_id, owner_id, announce, cause="被秒杀")
     elif location == "opp_threat":
         threats = game_state.players[opponent_id].special.get("creature_threats", [])
         idx = next((i for i, t in enumerate(threats) if int(t["card_id"]) == card_id), -1)
         if idx >= 0:
             threat = threats.pop(idx)
             owner_id = threat.get("owner", opponent_id)
-            _on_creature_death(game_state, opponent_id, card_id, owner_id, announce)
+            _on_creature_death(game_state, opponent_id, card_id, owner_id, announce, cause="被秒杀")
 
 
 def choose_creature_target(game_state, card_id_filter=None):
@@ -1415,6 +1506,39 @@ def _hand_count(game_state, card_id):
         game_state.hand_cards[index] == card_id
         for index in _occupied_hand_indexes(game_state)
     )
+
+
+def effective_hand_size_for_limit(game_state):
+    """Return the hand size used for HAND_LIMIT / discard calculations.
+
+    When 管虫 (26) is present in the local player's hand, discovery cards
+    (27-35) do not count toward the hand-size cap, matching the card's
+    new effect: **见闻牌不占手牌位**.
+    """
+    from card_duel.cards.slugcat_data import SLUGCAT_DISCOVERY_IDS
+
+    occupied = _occupied_hand_indexes(game_state)
+    total = len(occupied)
+    if _hand_count(game_state, 26) > 0:
+        # Exclude discovery cards from the cap count
+        discovery_count = sum(
+            1 for idx in occupied
+            if game_state.hand_cards[idx] in SLUGCAT_DISCOVERY_IDS
+        )
+        total -= discovery_count
+    return max(0, total)
+
+
+def get_displayed_hand_count(game_state):
+    """Return a tuple (effective, total) for the hand-count UI display.
+
+    *effective* excludes discovery cards when 管虫 is in hand (used for
+    limit comparison); *total* is the raw physical card count so the
+    player can always see how many physical cards they hold.
+    """
+    total = len(_occupied_hand_indexes(game_state))
+    effective = effective_hand_size_for_limit(game_state)
+    return effective, total
 
 
 def _remove_first_hand_card(game_state, card_id):

@@ -236,8 +236,32 @@ def _receive_game_state_payload(game_state):
             # Process pending draw pile returns for local player
             pending_returns = player.special.get("pending_draw_returns", [])
             if pending_returns:
-                game_state.draw_pile.extend(pending_returns)
+                from card_duel.cards.slugcat_data import (
+                    SLUGCAT_DISCOVERY_IDS, SLUGCAT_CHARACTER_ID,
+                )
+                if game_state.character_ids.get(player_id) == SLUGCAT_CHARACTER_ID:
+                    pool = player.special.setdefault("discovery_pool", [])
+                    for cid in pending_returns:
+                        if cid in SLUGCAT_DISCOVERY_IDS:
+                            pool.append(cid)
+                        else:
+                            game_state.draw_pile.append(cid)
+                else:
+                    game_state.draw_pile.extend(pending_returns)
                 player.special["pending_draw_returns"] = []
+            # 炸矛穿透：立即随机弃牌（不等下回合开始），播报被弃牌名
+            pending_discards = player.special.get("pending_discards", 0)
+            if pending_discards > 0:
+                from card_duel.cards.slugcat import _resolve_pending_discards
+                from card_duel.ui.network import colored_announce
+
+                _resolve_pending_discards(
+                    game_state, player,
+                    announce=lambda msg: colored_announce(game_state, msg),
+                )
+                if game_state.window is not None:
+                    from card_duel.ui.network import refresh_cards
+                    refresh_cards(game_state)
     game_state.connection.sendall(ACK_MESSAGE.encode("utf-8"))
 
     for player_id in (1, 2):

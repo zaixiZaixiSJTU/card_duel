@@ -193,6 +193,10 @@ def run_client_game(game_state):
 
         if not play_active_turn(game_state, player_id=2, round_number=round_number):
             return
+        # 必须在signal_turn_change之前同步一次TURN_END结算过的完整数值
+        # （钢筋流血/生物伤害等有播报但面板未更新的问题即因此缺失导致）。
+        refresh_status(game_state)
+        send_game_state(game_state)
         signal_turn_change(game_state)
         time.sleep(0.3)
         colored_announce(game_state, " ---------------------------------------------------- ")

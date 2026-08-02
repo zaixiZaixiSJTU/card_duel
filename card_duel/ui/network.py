@@ -34,7 +34,8 @@ FONT_BODY = ("Microsoft YaHei UI", 11)
 FONT_BODY_BOLD = ("Microsoft YaHei UI", 11, "bold")
 FONT_MONO = ("Consolas", 10)
 
-MAX_HAND_BUTTONS = 12
+MAX_HAND_BUTTONS = 18
+HAND_COLS = 6  # 每行最多6张手牌
 MAX_ENERGY_ORBS = 8
 SLOT_THUMB_SIZE = (96, 138)
 
@@ -270,13 +271,15 @@ def _build_player_panel(player_id, character_name, is_local, hp_max):
 
 
 def _build_card_grid(card_images, hand_cards):
-    """Build the hand-card row WITHOUT binding events.
+    """Build the hand-card grid WITHOUT binding events.
 
+    每行最多 HAND_COLS(6) 张，超过换行，整体竖向滚动。
     All event binding happens in ``bind_hand_card_events`` AFTER the
     window is finalized, because PySimpleGUI refuses to operate on
     elements whose underlying Tk widget has not been created yet.
     """
-    card_row = []
+    rows = []
+    current_row = []
     for button_index in range(MAX_HAND_BUTTONS):
         card_id = (
             hand_cards[button_index]
@@ -294,13 +297,18 @@ def _build_card_grid(card_images, hand_cards):
             button_color=(COLOR_PAPER, COLOR_PAPER),
             border_width=1,
         )
-        card_row.append(button)
+        current_row.append(button)
+        if len(current_row) >= HAND_COLS:
+            rows.append(current_row)
+            current_row = []
+    if current_row:
+        rows.append(current_row)
 
     return sg.Column(
-        [card_row],
+        rows,
         scrollable=True,
-        size=(WINDOW_SIZE[0] - 70, 205),
-        vertical_scroll_only=False,
+        size=(WINDOW_SIZE[0] - 70, 260),
+        vertical_scroll_only=True,
         background_color=COLOR_PAPER,
         expand_x=True,
         key="-CARD-COL-",
@@ -815,7 +823,13 @@ def refresh_status(game_state):
     )
 
     game_state.window["-DECK-COUNT-"].update(str(len(game_state.draw_pile)))
-    game_state.window["-HAND-COUNT-"].update(str(game_state.hand_size))
+    # 管虫在场时显示“有效手牌/总手牌”格式
+    from card_duel.cards.slugcat import get_displayed_hand_count
+    effective, total = get_displayed_hand_count(game_state)
+    if effective != total:
+        game_state.window["-HAND-COUNT-"].update(f"{effective}/{total}")
+    else:
+        game_state.window["-HAND-COUNT-"].update(str(total))
     game_state.window.refresh()
 
 
@@ -947,7 +961,13 @@ def refresh_cards(game_state):
         game_state.hand_cards.extend([0] * (999 - len(game_state.hand_cards)))
 
     # 判断类型直接用 ID 判断：49/50 是插入物（红色边框），16-26 是生物（金色边框）
-    from card_duel.cards.slugcat_data import SLUGCAT_CREATURE_IDS, SLUGCAT_INSERTED_IDS
+    from card_duel.cards.slugcat_data import SLUGCAT_CREATURE_IDS, SLUGCAT_INSERTED_IDS, SLUGCAT_SPECS_BY_ID, SLUGCAT_DISCOVERY_IDS
+    from card_duel.core.combat import render_creature_card_with_hp, render_card_with_effective_cost
+    from card_duel.cards.slugcat import _effective_cost
+
+    # 获取本地玩家生物血量（用于动态渲染卡面）
+    local_player = game_state.players[game_state.local_player_id]
+    creature_health = local_player.special.get("creature_health", {})
 
     hand_index = 0
     while (
@@ -966,12 +986,36 @@ def refresh_cards(game_state):
                 border_color = COLOR_GOLD
             else:
                 border_color = COLOR_PAPER
+            # 生物牌：动态生成带血量的卡图
+            if is_creature and card_id in SLUGCAT_SPECS_BY_ID:
+                hp_list = creature_health.get(card_id, [])
+                # 找到当前手牌中第几张同名生物（对应血量列表中的位置）
+                same_count_before = sum(
+                    1 for i in range(hand_index)
+                    if game_state.hand_cards[i] == card_id
+                )
+                current_hp = hp_list[same_count_before] if same_count_before < len(hp_list) else 0
+                image_data = render_creature_card_with_hp(
+                    SLUGCAT_SPECS_BY_ID[card_id], current_hp
+                )
+            # 见闻牌：动态生成带实际耗能的卡面（折扣后数字显示绿色）
+            elif card_id in SLUGCAT_DISCOVERY_IDS and card_id in SLUGCAT_SPECS_BY_ID:
+                spec = SLUGCAT_SPECS_BY_ID[card_id]
+                eff_cost = _effective_cost(
+                    game_state, game_state.local_player_id, card_id
+                )
+                if eff_cost != spec.cost:
+                    image_data = render_card_with_effective_cost(spec, eff_cost)
+                else:
+                    image_data = game_state.card_images[safe_card_id]
+            else:
+                image_data = game_state.card_images[safe_card_id]
             # NOTE: Button.update() does not support border_width at runtime,
             # so the image/visibility go through update() while the thick
             # colored border is applied directly on the Tk widget below.
             _safe_update(
                 element,
-                image_data=game_state.card_images[safe_card_id],
+                image_data=image_data,
                 visible=True,
                 button_color=(COLOR_PAPER, border_color),
             )
@@ -1459,12 +1503,19 @@ def open_deck_viewer(game_state):
 
     # 已解锁生物（不进入抽牌堆、不可抽取，仅展示）
     unlocked_creatures = {}
+    # 见闻牌堆（discovery_pool，独立于抽牌堆）
+    discovery_pool_counts = {}
     if character_id == 4:
         local_player = game_state.players[game_state.local_player_id]
         # JSON反序列化后key可能是字符串，统一转int
         unlocked_creatures = {
             int(k): v for k, v in local_player.special.get("unlocked_creature_counts", {}).items()
         }
+        # discovery_pool 是一个 list，统计每张见闻牌的数量
+        pool = local_player.special.get("discovery_pool", [])
+        for cid in pool:
+            cid_int = int(cid)
+            discovery_pool_counts[cid_int] = discovery_pool_counts.get(cid_int, 0) + 1
 
     # Order categories: slugcat type order first, then any extras.
     ordered_categories = [c for c in DECK_TYPE_ORDER if c in groups]
@@ -1525,6 +1576,25 @@ def open_deck_viewer(game_state):
                     images, character_id, bucket, drawable=True
                 )
             )
+
+    # 见闻牌堆区（discovery_pool，独立于抽牌堆，猫跑路从中抽取）
+    if discovery_pool_counts:
+        rows.append([
+            sg.Text(
+                f"  见闻牌堆  ·  {sum(discovery_pool_counts.values())} 张"
+                f"（猫跑路抽取，打出/弃牌后回到此堆）",
+                font=FONT_BODY_BOLD,
+                text_color=COLOR_INK,
+                background_color=DECK_TYPE_COLORS.get("见闻", COLOR_PAPER_DARK),
+                expand_x=True,
+                pad=((4, 4), (12, 4)),
+            )
+        ])
+        rows.extend(
+            _deck_viewer_card_rows(
+                images, character_id, discovery_pool_counts, drawable=False
+            )
+        )
 
     # 已解锁生物区（不可抽取）
     if unlocked_creatures:

@@ -138,6 +138,10 @@ def run_server_game(game_state):
         if not play_active_turn(game_state, player_id=1, round_number=round_number):
             return
 
+        # TURN_END 阶段结算了钢筋流血、生物伤害等（有文本播报），必须在此处再同步
+        # 一次完整数值，否则对端只能看到文字、血量和敏捷不会变化。
+        refresh_status(game_state)
+        send_game_state(game_state)
         set_phase(game_state, f"回合 {round_number} - 对手出牌中...")
         colored_announce(game_state, " ---------------------------------------------------- ")
         signal_turn_change(game_state)

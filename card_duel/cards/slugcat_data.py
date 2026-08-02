@@ -26,28 +26,28 @@ SLUGCAT_CARD_SPECS = (
     SlugcatCardSpec(2, "一块石子", "物品", 10, 0, "造成1点伤害并转换动能。"),
     SlugcatCardSpec(3, "炸药", "物品", 3, 1, "造成10点伤害，随后自己受到5点伤害。"),
     SlugcatCardSpec(4, "炸矛", "物品", 3, 2, "造成3点伤害并转换动能；穿透时额外失去10点生命并弃1张牌。"),
-    SlugcatCardSpec(5, "电矛", "物品", 1, 2, "造成3点伤害并转换动能；穿透时插入并持续降低力量。"),
+    SlugcatCardSpec(5, "电矛", "物品", 1, 2, "造成3点伤害并转换动能；穿透时插入对手体内，每回合开始使其力量-2/根，拔出后失效。"),
     SlugcatCardSpec(6, "猫猫小跳", "技能", 6, 0, "获得1点敏捷；下一张矛或石子再获得1点敏捷。"),
     SlugcatCardSpec(7, "脊背大跳", "技能", 4, 2, "获得3点敏捷；紧接翻滚或滑铲时耗能-1。"),
     SlugcatCardSpec(8, "一个滑铲", "技能", 3, 1, "获得4点动能。"),
     SlugcatCardSpec(9, "翻滚", "技能", 4, 0, "要求敏捷至少2；敏捷+2后全部转换为动能。"),
-    SlugcatCardSpec(10, "趴下", "技能", 4, 1, "清除敏捷和动能；向其他玩家加入随机生物。"),
+    SlugcatCardSpec(10, "趴下", "技能", 2, 0, "清除敏捷和动能；本回合猫闯祸生成的生物进入对方手牌。"),
     SlugcatCardSpec(11, "猫会后空翻", "技能", 3, 2, "获得4点动能和2点敏捷。"),
     SlugcatCardSpec(12, "猫睡觉", "技能", 6, 1, "消耗3点饱食度，获得1点业力。"),
     SlugcatCardSpec(13, "猫觅食", "技能", 8, 0, "按最近死亡生物生命值的五分之一获得饱食度，向上取整。抽1张牌。"),
-    SlugcatCardSpec(14, "猫跑路了", "技能", 8, None, "清除手牌生物，并按投入能量获得见闻牌。抽1张牌。"),
-    SlugcatCardSpec(15, "猫闯祸", "技能", 3, 2, "将1只随机生物加入自己的手牌。抽1张牌。"),
-    SlugcatCardSpec(16, "小面条", "生物", 5, 0, "1血。0费转移到别人的手牌并耗能+1，否则死亡。死亡时加入一张面条蝇。会和手牌中的蜥蜴一起消失。", True),
+    SlugcatCardSpec(14, "猫跑路了", "技能", 8, None, "清除手牌生物，耗尽全部能量，抽X-1张见闻牌（见闻不够抽其他牌）。"),
+    SlugcatCardSpec(15, "猫闯祸", "技能", 3, 2, "将1只随机生物加入自己的手牌。抽2张牌。"),
+    SlugcatCardSpec(16, "小面条", "生物", 2, 0, "1血。0费转移到别人的手牌并耗能+1，否则死亡。死亡时加入一张面条蝇。会和手牌中的蜥蜴一起消失。", True),
     SlugcatCardSpec(17, "面条蝇", "生物", 0, None, "5血。造成5伤害。每回合免疫1次攻击，不可打出。", True),
     SlugcatCardSpec(18, "射线虫", "生物", 0, 1, "1血。1费转移到别人的手牌。加入一张秃鹫。", True),
     SlugcatCardSpec(19, "秃鹫", "生物", 0, 2, "15血。场上有生物死亡或2费打出。造成10伤害。", True),
-    SlugcatCardSpec(20, "绿蜥蜴", "生物", 5, 2, "10血。静止一回合才会造成5伤。2费打出。", True),
+    SlugcatCardSpec(20, "绿蜥蜴", "生物", 3, 2, "10血。静止一回合才会造成5伤。2费打出。", True),
     SlugcatCardSpec(21, "金蜥蜴", "生物", 0, 1, "6血。造成3伤害。1费打出。", True),
     SlugcatCardSpec(22, "烈焰蜈蚣", "生物", 0, 1, "共享20血。1费打出。存活时在目前场上烈焰蜈蚣较多的角色手牌中加入一张，每张可免伤一次。手牌中数量≥3时造成15伤害。", True),
     SlugcatCardSpec(23, "烈焰蜥蜴", "生物", 0, None, "20血。造成10伤害，可1费避免。每次被攻击反伤3。不可打出。", True),
     SlugcatCardSpec(24, "钢秃鹫", "生物", 0, 3, "30点生命；可转移，随后造成15点伤害。", True),
     SlugcatCardSpec(25, "拾荒者", "生物", 3, None, "5点生命；随机携带物品并对持有者使用，不可打出。", True),
-    SlugcatCardSpec(26, "管虫", "生物", 0, 0, "1点生命；占用手牌位置，使见闻牌耗能-1。", True),
+    SlugcatCardSpec(26, "管虫", "生物", 0, 0, "1点生命；在场时见闻牌不占手牌位（不计入手牌上限4）。", True),
     SlugcatCardSpec(27, "工业郊区", "见闻", 1, 2, "加入拾荒者、射线虫、秃鹫、泡水果和矛类物品。"),
     SlugcatCardSpec(28, "阴影城堡", "见闻", 0, 2, "加入拾荒者、珍珠、闪光果、炸矛和炸药。"),
     SlugcatCardSpec(29, "高墙绝壁", "见闻", 0, 2, "加入金蜥蜴、秃鹫和管虫。"),
@@ -73,7 +73,7 @@ SLUGCAT_CARD_SPECS = (
     # 49/50 插入物：独立卡牌ID，完全避免与普通钢筋/电矛（1/5）以及形态卡（36-40）混淆。
     # 仅通过插入效果加入手牌，不在任何牌堆中。耗能1拔出（参照工作簿原版描述）。
     SlugcatCardSpec(49, "钢筋【插入】", "物品", 0, 1, "对手插入体内的钢筋。耗能1拔出，返回对方牌堆。不可弃牌。", True),
-    SlugcatCardSpec(50, "电矛【插入】", "物品", 0, 1, "插入体内的电矛。耗能1拔出，返回对方牌堆。不可弃牌。", True),
+    SlugcatCardSpec(50, "电矛【插入】", "物品", 0, 1, "插入体内的电矛。每回合开始力量-2/根。耗能1拔出返回牌堆，并恢复本回合扣减的力量。不可弃牌。", True),
 )
 
 SLUGCAT_SPECS_BY_ID = {spec.card_id: spec for spec in SLUGCAT_CARD_SPECS}
@@ -87,8 +87,9 @@ SLUGCAT_INITIAL_DECK_COUNTS = {
     spec.card_id: spec.source_count
     for spec in SLUGCAT_CARD_SPECS
     if spec.source_count > 0
-    and not (16 <= spec.card_id <= 26)
-    and spec.card_id not in (49, 50)
+    and not (16 <= spec.card_id <= 26)  # 排除生物
+    and not (27 <= spec.card_id <= 35)  # 排除见闻（仅存在于discovery_pool）
+    and spec.card_id not in (49, 50)     # 排除插入物
 }
 
 SLUGCAT_CREATURE_IDS = tuple(range(16, 27))
