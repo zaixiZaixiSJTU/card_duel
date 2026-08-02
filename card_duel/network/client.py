@@ -12,6 +12,7 @@ from card_duel.core.combat import (
     NetworkGameState,
     build_shuffled_deck,
     draw_cards,
+    initialize_character_states,
     load_character_images,
 )
 from card_duel.network.gameplay import play_active_turn
@@ -129,6 +130,7 @@ def exchange_character_choices(game_state):
 
 
 def prepare_game_window(game_state):
+    initialize_character_states(game_state)
     character_id = game_state.character_ids[2]
     game_state.card_images, game_state.max_card_id = load_character_images(
         character_id

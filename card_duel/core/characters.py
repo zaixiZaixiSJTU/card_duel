@@ -4,6 +4,7 @@ CHARACTER_NAMES = {
     1: "战士",
     2: "女猎手",
     3: "时间守护者",
+    4: "蛞蝓猫",
 }
 
 LOCAL_CHARACTER_PROFILES = {
@@ -30,5 +31,13 @@ LOCAL_CHARACTER_PROFILES = {
         "color": "#8B79A8",
         "health": 35,
         "energy_range": (6, 8),
+    },
+    4: {
+        "name": "蛞蝓猫",
+        "icon": "◡",
+        "description": "雨中旅者 · 业力与动能",
+        "color": "#C39A55",
+        "health": 5,
+        "energy_range": (4, 6),
     },
 }

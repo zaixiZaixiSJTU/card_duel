@@ -117,17 +117,20 @@ def send_game_state(game_state):
         str(player_id): {
             "energy": player.energy,
             "health": player.health,
+            "strength": player.strength,
+            "poison": player.poison,
+            "special": player.special,
         }
         for player_id, player in game_state.players.items()
     }
-    game_state.connection.sendall(json.dumps(player_data).encode("utf-8"))
+    _send_json_payload(game_state.connection, player_data)
     wait_for_acknowledgement(game_state)
 
     for player_id in (1, 2):
         defence_data = [
             effect.to_dict() for effect in game_state.defences[player_id]
         ]
-        game_state.connection.sendall(json.dumps(defence_data).encode("utf-8"))
+        _send_json_payload(game_state.connection, defence_data)
         wait_for_acknowledgement(game_state)
 
     game_state.window.refresh()
@@ -160,19 +163,18 @@ def receive_until_turn_change(game_state):
 
 
 def _receive_game_state_payload(game_state):
-    player_data = json.loads(
-        receive_with_ui(game_state).decode("utf-8")
-    )
+    player_data = _receive_json_payload(game_state)
     for player_id, player in game_state.players.items():
         values = player_data[str(player_id)]
         player.energy = values["energy"]
         player.health = values["health"]
+        player.strength = values.get("strength", player.strength)
+        player.poison = values.get("poison", player.poison)
+        player.special.update(values.get("special", {}))
     game_state.connection.sendall(ACK_MESSAGE.encode("utf-8"))
 
     for player_id in (1, 2):
-        defence_data = json.loads(
-            receive_with_ui(game_state).decode("utf-8")
-        )
+        defence_data = _receive_json_payload(game_state)
         game_state.defences[player_id] = [
             DefenceEffect.from_dict(item) for item in defence_data
         ]
@@ -181,6 +183,28 @@ def _receive_game_state_payload(game_state):
 
     check_game_over(game_state)
     refresh_status(game_state)
+
+
+def _send_json_payload(connection, data):
+    payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    connection.sendall(len(payload).to_bytes(4, "big") + payload)
+
+
+def _receive_json_payload(game_state):
+    payload_size = int.from_bytes(_receive_exact(game_state, 4), "big")
+    return json.loads(_receive_exact(game_state, payload_size).decode("utf-8"))
+
+
+def _receive_exact(game_state, byte_count):
+    chunks = []
+    remaining = byte_count
+    while remaining:
+        chunk = receive_with_ui(game_state, buffer_size=remaining)
+        if not chunk:
+            raise ConnectionError("对方已断开连接")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
 
 
 def signal_turn_change(game_state):

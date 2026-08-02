@@ -6,9 +6,11 @@ from card_duel.cards.registry import (
     get_card_definition,
     play_registered_card,
 )
+from card_duel.cards.slugcat import register_slugcat_phase_handlers
 from card_duel.core.combat import (
     CHARACTERS,
     advance_turn_effects,
+    apply_damage,
     draw_cards,
 )
 from card_duel.core.game import TurnEngine, TurnPhase
@@ -46,6 +48,7 @@ def play_active_turn(game_state, player_id, round_number):
         TurnPhase.TURN_START, _apply_heartlink_damage, priority=20
     )
     turn.register_phase_handler(TurnPhase.DRAW, _draw_turn_cards)
+    register_slugcat_phase_handlers(turn)
 
     # 回合开始时：结算持续效果与“回合开始时”能力。
     _enter_phase(turn, TurnPhase.TURN_START)
@@ -103,11 +106,11 @@ def _apply_heartlink_damage(context):
         return
 
     context.announce(f"心连心，爱你哦(-{heartlink_damage})")
-    game_state.players[player_id].health -= heartlink_damage
+    apply_damage(game_state, heartlink_damage, player_id)
     sacrifice_layers = game_state.players[player_id].special["sacrifice"]
     if sacrifice_layers:
         draw_cards(game_state, heartlink_damage * sacrifice_layers)
-    game_state.players[context.opponent_id].health -= heartlink_damage
+    apply_damage(game_state, heartlink_damage, context.opponent_id)
 
 
 def _run_card_play_phase(game_state, player_id, opponent_id, announce):

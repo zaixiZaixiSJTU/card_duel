@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import FreeSimpleGUI as sg
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from card_duel.core.characters import CHARACTER_NAMES
 
@@ -32,7 +32,7 @@ class CharacterState:
     defence: int = 0
     strength: int = 0
     poison: int = 0
-    special: dict[str, int] = field(
+    special: dict[str, object] = field(
         default_factory=lambda: {
             "sacrifice": 0,
             "bastion": 0,
@@ -164,8 +164,7 @@ def build_shuffled_deck(first_card_id, last_card_id, card_counts=None):
 def load_character_images(character_id):
     character_images_dir = resolve_resource_path(f"assets/cards/{character_id}")
     if not character_images_dir.exists():
-        sg.popup_error(f"缺少资源目录: {character_images_dir}")
-        return [], 0
+        return _generate_registered_card_images(character_id)
 
     card_images = []
     card_id = 0
@@ -179,6 +178,101 @@ def load_character_images(character_id):
                 sg.popup_error(f"目录内无有效图片: {character_images_dir}")
             break
     return card_images, card_id - 1
+
+
+def _generate_registered_card_images(character_id):
+    """Generate readable paper cards when a character has no image pack."""
+    # Delayed import avoids a module cycle during registry construction.
+    from card_duel.cards.registry import get_character_card_catalog
+
+    catalog = get_character_card_catalog(character_id)
+    playable_cards = [definition for definition in catalog if definition.card_id]
+    if not playable_cards:
+        sg.popup_error(f"角色 {character_id} 没有卡图或已注册卡牌")
+        return [], 0
+
+    definitions = {definition.card_id: definition for definition in catalog}
+    max_card_id = max(definitions)
+    images = []
+    for card_id in range(max_card_id + 1):
+        definition = definitions.get(card_id)
+        images.append(_render_card_placeholder(definition))
+    return images, max_card_id
+
+
+def _render_card_placeholder(definition):
+    image = Image.new("RGB", IMAGE_SIZE, "#FFFDF8")
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle(
+        (1, 1, IMAGE_SIZE[0] - 2, IMAGE_SIZE[1] - 2),
+        radius=8,
+        outline="#2E2A26",
+        width=2,
+    )
+    if definition is None or definition.card_id == 0:
+        return _encode_pil_image(image)
+
+    accent_by_type = {
+        "技能": "#6F89A8",
+        "物品": "#C39A55",
+        "生物": "#C86655",
+        "见闻": "#719775",
+        "形态": "#8B79A8",
+    }
+    accent = accent_by_type.get(definition.card_type, "#837A70")
+    draw.rounded_rectangle((7, 7, 113, 31), radius=5, fill=accent)
+    title_font = _load_card_font(14, bold=True)
+    body_font = _load_card_font(9)
+    small_font = _load_card_font(8)
+    draw.text((11, 10), definition.name, fill="#FFFDF8", font=title_font)
+    cost_text = "X" if definition.cost is None else str(definition.cost)
+    draw.ellipse((92, 36, 112, 56), outline=accent, width=2)
+    draw.text((99, 39), cost_text, fill=accent, font=body_font)
+    draw.text((10, 40), definition.card_type, fill=accent, font=body_font)
+    y = 66
+    for line in _wrap_card_text(definition.description, 11)[:7]:
+        draw.text((10, y), line, fill="#2E2A26", font=small_font)
+        y += 14
+    return _encode_pil_image(image)
+
+
+def _load_card_font(size, bold=False):
+    font_names = ("msyhbd.ttc", "msyh.ttc") if bold else ("msyh.ttc",)
+    for font_name in font_names:
+        font_path = Path("C:/Windows/Fonts") / font_name
+        if font_path.exists():
+            return ImageFont.truetype(str(font_path), size)
+    return ImageFont.load_default()
+
+
+def _wrap_card_text(text, width):
+    return [text[index:index + width] for index in range(0, len(text), width)]
+
+
+def _encode_pil_image(image):
+    image_buffer = io.BytesIO()
+    image.save(image_buffer, format="PNG")
+    return base64.b64encode(image_buffer.getvalue())
+
+
+def initialize_character_states(game_state):
+    """Apply character-specific starting health and public resources."""
+    for player_id, character_id in game_state.character_ids.items():
+        player = game_state.players[player_id]
+        player.health = 30
+        player.energy = 0
+        player.defence = 0
+        player.strength = 0
+        player.poison = 0
+        player.special = {
+            "sacrifice": 0,
+            "bastion": 0,
+            "heartlink": 0,
+        }
+        if character_id == 4:
+            from card_duel.cards.slugcat import initialize_slugcat_player
+
+            initialize_slugcat_player(player)
 
 
 # ============================================================
@@ -213,6 +307,11 @@ def update_defence_totals(game_state):
 
 
 def apply_damage(game_state, damage, target_player_id):
+    target = game_state.players[target_player_id]
+    if target.special.get("immune_next_attack", 0):
+        target.special["immune_next_attack"] -= 1
+        return 0
+
     defence_effects = game_state.defences[target_player_id]
     while defence_effects:
         while defence_effects[0].amount > 0 and damage > 0:
@@ -222,7 +321,24 @@ def apply_damage(game_state, damage, target_player_id):
             break
         if defence_effects[0].amount == 0:
             defence_effects.pop(0)
-    game_state.players[target_player_id].health -= damage
+    return lose_life(game_state, damage, target_player_id)
+
+
+def lose_life(game_state, amount, target_player_id):
+    """Lose life without defence; Slugcat agility still prevents life loss."""
+    target = game_state.players[target_player_id]
+    amount = max(0, amount)
+    if game_state.character_ids.get(target_player_id) == 4:
+        agility = int(target.special.get("agility", 0))
+        prevented = min(agility, amount)
+        target.special["agility"] = agility - prevented
+        amount -= prevented
+    target.health -= amount
+    if game_state.character_ids.get(target_player_id) == 4 and target.health <= 0:
+        from card_duel.cards.slugcat import resolve_slugcat_karma
+
+        resolve_slugcat_karma(game_state, target_player_id)
+    return amount
 
 
 # ============================================================
@@ -293,15 +409,22 @@ def advance_turn_effects(game_state, player_id, announce):
 # ============================================================
 # Card Deal
 # ============================================================
+def add_card_to_hand(game_state, card_id):
+    """Insert a card into the first free local hand slot."""
+    for insert_index, current_card_id in enumerate(game_state.hand_cards):
+        if current_card_id in (0, -1):
+            game_state.hand_cards[insert_index] = card_id
+            game_state.hand_size = max(game_state.hand_size, insert_index + 1)
+            return True
+    return False
+
+
 def draw_cards(game_state, amount):
-    insert_index = 0
-    while game_state.hand_cards[insert_index] != 0:
-        insert_index += 1
     for _ in range(amount):
         if not game_state.draw_pile:
             break
-        game_state.hand_cards[insert_index] = game_state.draw_pile.pop(0)
-        insert_index += 1
+        if not add_card_to_hand(game_state, game_state.draw_pile.pop(0)):
+            break
 
 
 # ============================================================
@@ -699,13 +822,20 @@ def _create_discard_window(game_state, title, exclude_id=None):
 def check_game_over(game_state):
     if game_state.game_over:
         return
-    if game_state.players[1].health <= 0:
+    if _is_player_defeated(game_state, 1):
         print('玩家2获胜')
         sg.popup_notify('还可以继续打牌哦', title='玩家2获胜',
                         display_duration_in_ms=3000, location=(700, 500))
         game_state.game_over = True
-    if game_state.players[2].health <= 0:
+    if _is_player_defeated(game_state, 2):
         print('玩家1获胜')
         sg.popup_notify('还可以继续打牌哦', title='玩家1获胜',
                         display_duration_in_ms=3000, location=(700, 500))
         game_state.game_over = True
+
+
+def _is_player_defeated(game_state, player_id):
+    player = game_state.players[player_id]
+    if game_state.character_ids.get(player_id) == 4:
+        return player.special.get("karma", 0) <= 0
+    return player.health <= 0

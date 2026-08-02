@@ -4,6 +4,12 @@ from dataclasses import dataclass
 from typing import Callable
 
 from card_duel.core import combat
+from card_duel.cards.slugcat import get_slugcat_handler
+from card_duel.cards.slugcat_data import (
+    SLUGCAT_CARD_SPECS,
+    SLUGCAT_CHARACTER_ID,
+    SLUGCAT_INITIAL_DECK_COUNTS,
+)
 
 CardHandler = Callable[..., bool | int]
 
@@ -17,6 +23,9 @@ class CardDefinition:
     name: str
     handler: CardHandler
     exhausted: bool = False
+    card_type: str = "卡牌"
+    cost: int | None = None
+    description: str = ""
 
 
 # 牌组构成与效果注册集中维护；新增卡牌只需要修改这一处。
@@ -27,6 +36,7 @@ CARD_COUNTS_BY_CHARACTER = {
     },
     2: {1: 2, 2: 3, 3: 1, 4: 4, 5: 2},
     3: {1: 2, 2: 3, 3: 1, 4: 4, 5: 2},
+    SLUGCAT_CHARACTER_ID: SLUGCAT_INITIAL_DECK_COUNTS,
 }
 
 CARD_REGISTRY = {
@@ -60,7 +70,29 @@ CARD_REGISTRY = {
     (1, 16): CardDefinition(1, 16, "燔祭", combat.play_burnt_offering_card),
     (2, 0): CardDefinition(2, 0, "未实现", combat.play_unavailable_card),
     (3, 0): CardDefinition(3, 0, "未实现", combat.play_unavailable_card),
+    (SLUGCAT_CHARACTER_ID, 0): CardDefinition(
+        SLUGCAT_CHARACTER_ID,
+        0,
+        "不可用",
+        combat.play_unavailable_card,
+    ),
 }
+
+CARD_REGISTRY.update(
+    {
+        (SLUGCAT_CHARACTER_ID, spec.card_id): CardDefinition(
+            character_id=SLUGCAT_CHARACTER_ID,
+            card_id=spec.card_id,
+            name=spec.name,
+            handler=get_slugcat_handler(spec.card_id),
+            exhausted=spec.exhausted,
+            card_type=spec.card_type,
+            cost=spec.cost,
+            description=spec.description,
+        )
+        for spec in SLUGCAT_CARD_SPECS
+    }
+)
 
 
 def get_card_counts(character_id):
@@ -75,6 +107,17 @@ def get_card_definition(character_id, card_id):
         raise KeyError(
             f"角色 {character_id} 未注册卡牌 {card_id}"
         ) from error
+
+
+def get_character_card_catalog(character_id):
+    """Return registered definitions ordered by card id for UI rendering."""
+    return [
+        definition
+        for (registered_character_id, _), definition in sorted(
+            CARD_REGISTRY.items(), key=lambda item: item[0]
+        )
+        if registered_character_id == character_id
+    ]
 
 
 def play_registered_card(

@@ -73,6 +73,7 @@ def _build_status_card(title, accent, key_prefix):
     strength_key = f"-{key_prefix}-STR-"
     orb_key = f"-{key_prefix}-ORB-"
     hp_bar_key = f"-{key_prefix}-HP-BAR-"
+    special_key = f"-{key_prefix}-SPECIAL-"
 
     health_bar = sg.ProgressBar(
         MAX_HEALTH_DISPLAY,
@@ -161,6 +162,16 @@ def _build_status_card(title, accent, key_prefix):
                 background_color=COLOR_PAPER,
                 size=(5, 1),
             ),
+        ],
+        [
+            sg.Text(
+                "",
+                key=special_key,
+                font=("Microsoft YaHei UI", 9),
+                text_color=COLOR_MUTED,
+                background_color=COLOR_PAPER,
+                size=(31, 1),
+            )
         ],
     ]
     return sg.Frame(
@@ -464,6 +475,14 @@ def character_select_dialog():
                 key="3",
                 pad=(7, 12),
             ),
+            sg.Button(
+                "04\n蛞 蝓 猫",
+                font=FONT_HEADING,
+                button_color=(COLOR_INK, "#E8DFC3"),
+                size=(12, 3),
+                key="4",
+                pad=(7, 12),
+            ),
         ],
     ]
     character, _ = sg.Window(
@@ -501,15 +520,25 @@ def refresh_status(game_state):
 
     local_player = game_state.players[game_state.local_player_id]
     opponent_player = game_state.players[game_state.opponent_player_id]
-    _update_player_status(game_state.window, "MY", local_player)
-    _update_player_status(game_state.window, "EN", opponent_player)
+    _update_player_status(
+        game_state.window,
+        "MY",
+        local_player,
+        _format_special_status(game_state, game_state.local_player_id),
+    )
+    _update_player_status(
+        game_state.window,
+        "EN",
+        opponent_player,
+        _format_special_status(game_state, game_state.opponent_player_id),
+    )
 
     game_state.window["-DECK-COUNT-"].update(str(len(game_state.draw_pile)))
     game_state.window["-HAND-COUNT-"].update(str(game_state.hand_size))
     game_state.window.refresh()
 
 
-def _update_player_status(window, key_prefix, player):
+def _update_player_status(window, key_prefix, player, special_status=""):
     window[f"-{key_prefix}-HP-"].update(
         str(player.health),
         text_color=COLOR_RED if player.health <= 10 else COLOR_INK,
@@ -523,6 +552,15 @@ def _update_player_status(window, key_prefix, player):
     window[f"-{key_prefix}-ORB-"].update(
         _format_energy_orbs(player.energy)
     )
+    window[f"-{key_prefix}-SPECIAL-"].update(special_status)
+
+
+def _format_special_status(game_state, player_id):
+    if game_state.character_ids.get(player_id) != 4:
+        return ""
+    from card_duel.cards.slugcat import format_slugcat_status
+
+    return format_slugcat_status(game_state.players[player_id])
 
 
 def refresh_cards(game_state):
