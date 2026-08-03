@@ -3,13 +3,14 @@
 import math
 import random
 
-from card_duel.cards.slugcat.hand import (
-    add_creature_threat,
-    count_card,
-    pop_first_creature,
-    remove_all_creatures,
-    remove_first,
+from card_duel.cards.slugcat.creatures import (
+    add_hand_creature,
+    add_threat,
+    kill_matching_creature,
+    remove_all_local_hand_creatures,
+    remove_hand_creature,
 )
+from card_duel.cards.slugcat.hand import draw_non_creatures
 from card_duel.cards.slugcat.specs import (
     DISCOVERY_ADJACENCY,
     DISCOVERY_CONTENTS,
@@ -20,6 +21,7 @@ from card_duel.cards.slugcat.specs import (
     SLUGCAT_SPECS_BY_ID,
 )
 from card_duel.cards.slugcat.state import MAX_KARMA, slugcat_data
+from card_duel.core.models import InsertedCardState
 from card_duel.core.rules import add_card_to_hand
 
 
@@ -43,6 +45,8 @@ def play_card(card_id: int, context):
         return False
     _resolve_action_chain(context, card_id)
     data.last_card_id = card_id
+    if card_id in SLUGCAT_DISCOVERY_IDS:
+        data.discovery_discount[card_id] = data.discovery_discount.get(card_id, 0) + 1
     if card_id not in SLUGCAT_ATTACK_ITEM_IDS and context.source.statuses.attack_lock:
         context.source.statuses.attack_lock -= 1
     return True
@@ -52,7 +56,7 @@ def _resolve_action_chain(context, card_id: int) -> None:
     data = slugcat_data(context.source)
     if card_id == 6 or not data.jump_followup:
         return
-    if card_id in (2, 4, 5):
+    if card_id in (1, 2, 4, 5):
         data.agility += 1
         context.announce(
             f"玩家{context.source_player_id}借小跳衔接攻击，额外获得1点敏捷"
@@ -60,20 +64,28 @@ def _resolve_action_chain(context, card_id: int) -> None:
     data.jump_followup = False
 
 
-def _effective_cost(context, card_id: int) -> int | None:
+def effective_cost(state, player_id: int, card_id: int) -> int | None:
     cost = SLUGCAT_SPECS_BY_ID[card_id].cost
     if cost is None:
         return None
-    data = slugcat_data(context.source)
+    player = state.players[player_id]
+    data = slugcat_data(player)
     if card_id == 7 and data.last_card_id in (8, 9):
         cost = max(0, cost - 1)
-    if card_id in SLUGCAT_DISCOVERY_IDS and count_card(context.state, 26):
-        cost = max(0, cost - 1)
+    if card_id in SLUGCAT_DISCOVERY_IDS:
+        cost = max(0, cost - data.discovery_discount.get(card_id, 0))
+    if card_id == 16:
+        creature = next(
+            (item for item in player.statuses.hand_creatures if item.card_id == 16),
+            None,
+        )
+        if creature is not None:
+            cost += creature.noodle_cost
     return cost
 
 
 def _pay_cost(context, card_id: int) -> bool:
-    cost = _effective_cost(context, card_id)
+    cost = effective_cost(context.state, context.source_player_id, card_id)
     if cost is None:
         return False
     if context.ignore_cost:
@@ -85,25 +97,24 @@ def _pay_cost(context, card_id: int) -> bool:
     return True
 
 
-def _attack_with_momentum(context, base_damage: int) -> tuple[int, int]:
+def _attack_with_momentum(context, base_damage: int) -> int:
     data = slugcat_data(context.source)
     damage = base_damage + context.source.strength + data.momentum
     data.momentum = 0
-    life_loss = context.combat.apply_damage(damage, context.target_player_id)
-    return damage, life_loss
+    return damage
 
 
 def _attack(card_id: int, base_damage: int, on_penetrate=None):
     def effect(context):
         if not _pay_cost(context, card_id):
             return False
-        damage, life_loss = _attack_with_momentum(context, base_damage)
-        context.announce(
-            f"玩家{context.source_player_id}使用{SLUGCAT_SPECS_BY_ID[card_id].name}"
-            f"（造成{damage}点伤害）"
+        damage = _attack_with_momentum(context, base_damage)
+        context.combat.resolve_attack(
+            context,
+            damage,
+            SLUGCAT_SPECS_BY_ID[card_id].name,
+            on_penetrate,
         )
-        if life_loss > 0 and on_penetrate:
-            on_penetrate(context)
         return True
 
     return effect
@@ -111,27 +122,42 @@ def _attack(card_id: int, base_damage: int, on_penetrate=None):
 
 def _insert_steel_rod(context):
     context.target.statuses.embedded_steel_rods += 1
-    context.announce(f"钢筋插入玩家{context.target_player_id}的手牌区")
+    context.target.statuses.inserted_cards.append(
+        InsertedCardState(49, context.source_player_id)
+    )
+    _queue_hand_card(context, 49)
+    context.announce(f"钢筋插入玩家{context.target_player_id}的手牌")
 
 
 def _insert_explosive_spear(context):
     context.combat.lose_life(10, context.target_player_id, context.announce)
     context.target.statuses.pending_discards += 1
     context.announce(
-        f"炸矛穿透：玩家{context.target_player_id}失去10点生命并需随机弃1张牌"
+        f"炸矛穿透：玩家{context.target_player_id}失去10点生命并随机弃1张牌"
     )
 
 
 def _insert_electric_spear(context):
     context.target.statuses.embedded_electric_spears += 1
+    context.target.statuses.inserted_cards.append(
+        InsertedCardState(50, context.source_player_id)
+    )
+    _queue_hand_card(context, 50)
     context.announce(f"电矛插入玩家{context.target_player_id}，其后续回合力量将降低")
+
+
+def _queue_hand_card(context, card_id: int) -> None:
+    if context.target_player_id == context.state.local_player_id:
+        add_card_to_hand(context.state, card_id)
+    else:
+        context.target.statuses.pending_hand_additions.append(card_id)
 
 
 def explosive(context):
     if not _pay_cost(context, 3):
         return False
-    context.combat.apply_damage(10, context.target_player_id)
-    context.combat.apply_damage(5, context.source_player_id)
+    context.combat.apply_damage(10, context.target_player_id, context.announce)
+    context.combat.apply_damage(5, context.source_player_id, context.announce)
     context.announce(f"玩家{context.source_player_id}引爆炸药（对目标10伤，自身5伤）")
     return True
 
@@ -183,11 +209,10 @@ def crouch(context):
         return False
     data = slugcat_data(context.source)
     data.agility = data.momentum = 0
-    creature_id = random.choice(SLUGCAT_CREATURE_IDS)
-    add_creature_threat(context.state, context.target_player_id, creature_id)
+    data.redirect_creatures_to_opponent = True
     context.announce(
-        f"玩家{context.source_player_id}趴下，"
-        f"{SLUGCAT_SPECS_BY_ID[creature_id].name}转向玩家{context.target_player_id}"
+        f"玩家{context.source_player_id}趴下，取消全部敏捷和动能；"
+        f"本回合猫闯祸生成的生物将进入玩家{context.target_player_id}手牌"
     )
     return True
 
@@ -220,47 +245,63 @@ def forage(context):
         return False
     gained = math.ceil(context.source.statuses.last_dead_creature_health / 5)
     slugcat_data(context.source).satiety += gained
-    context.announce(f"玩家{context.source_player_id}觅食，获得{gained}点饱食度")
+    context.source.statuses.last_dead_creature_health = 0
+    draw_non_creatures(context.state, 1)
+    context.announce(
+        f"玩家{context.source_player_id}觅食，获得{gained}点饱食度并抽1张牌"
+    )
     return True
 
 
 def run_away(context):
     data = slugcat_data(context.source)
-    if data.next_x_cost is not None:
-        amount = max(0, min(context.source.energy, data.next_x_cost))
-        data.next_x_cost = None
-    elif context.ignore_cost:
-        amount = 0
-    else:
-        maximum = max(0, context.source.energy)
-        amount = context.choices.choose_integer(
-            "猫跑路了", f"投入能量（0-{maximum}）", 0, maximum, maximum
-        )
-    if amount is None:
-        return False
-    if not context.ignore_cost:
-        context.source.energy -= amount
-    remove_all_creatures(context.state)
+    amount = 0 if context.ignore_cost else context.source.energy
+    context.source.energy = 0
+    draw_count = max(0, amount - 1)
+    remove_all_local_hand_creatures(context.state, context.source_player_id)
     obtained = 0
-    for _ in range(amount):
-        if not data.discovery_pool:
-            break
-        add_card_to_hand(context.state, data.discovery_pool.pop(0))
-        obtained += 1
-    for _ in range(amount - obtained):
-        add_card_to_hand(context.state, random.choice(SLUGCAT_CREATURE_IDS))
-    context.announce(f"玩家{context.source_player_id}跑路，获得{obtained}张见闻牌")
+    seen = set(data.seen_discoveries)
+    for _ in range(draw_count):
+        if data.discovery_pool:
+            index = next(
+                (
+                    index
+                    for index, candidate in enumerate(data.discovery_pool)
+                    if candidate not in seen
+                ),
+                0,
+            )
+            add_card_to_hand(context.state, data.discovery_pool.pop(index))
+            obtained += 1
+        else:
+            obtained += draw_non_creatures(context.state, 1)
+    context.announce(
+        f"玩家{context.source_player_id}跑路，耗尽{amount}点能量，获得{obtained}张牌"
+    )
     return True
 
 
 def trouble(context):
     if not _pay_cost(context, 15):
         return False
-    creature_id = random.choice(SLUGCAT_CREATURE_IDS)
-    add_card_to_hand(context.state, creature_id)
+    data = slugcat_data(context.source)
+    pool = list(data.unlocked_creature_counts) or [16, 20, 25]
+    creature_id = random.choice(pool)
+    destination = (
+        context.target_player_id
+        if data.redirect_creatures_to_opponent
+        else context.source_player_id
+    )
+    add_hand_creature(
+        context.state,
+        destination,
+        creature_id,
+        owner_id=context.source_player_id,
+    )
+    draw_non_creatures(context.state, 2)
     context.announce(
-        f"玩家{context.source_player_id}闯祸，引来了"
-        f"{SLUGCAT_SPECS_BY_ID[creature_id].name}"
+        f"玩家{context.source_player_id}闯祸，"
+        f"{SLUGCAT_SPECS_BY_ID[creature_id].name}加入玩家{destination}手牌，并抽2张牌"
     )
     return True
 
@@ -274,12 +315,26 @@ def _creature(card_id: int):
         if not _pay_cost(context, card_id):
             return False
         if card_id in (16, 18, 24):
-            add_creature_threat(context.state, context.target_player_id, card_id)
-        if card_id == 18:
-            add_creature_threat(context.state, context.target_player_id, 19)
-        if card_id == 19:
-            context.combat.apply_damage(10, context.target_player_id)
-        context.announce(f"玩家{context.source_player_id}处理了{spec.name}")
+            creature = remove_hand_creature(
+                context.state,
+                context.source_player_id,
+                card_id,
+                remove_physical=False,
+            )
+            noodle_cost = (creature.noodle_cost + 1) if creature else 0
+            add_hand_creature(
+                context.state,
+                context.target_player_id,
+                card_id,
+                owner_id=context.source_player_id,
+                noodle_cost=noodle_cost,
+            )
+            context.announce(
+                f"玩家{context.source_player_id}将{spec.name}转移到"
+                f"玩家{context.target_player_id}手牌"
+            )
+        else:
+            context.announce(f"玩家{context.source_player_id}打出了{spec.name}")
         return True
 
     return effect
@@ -293,13 +348,22 @@ def _discovery(card_id: int):
         if card_id not in data.seen_discoveries:
             data.seen_discoveries.append(card_id)
             data.karma_max = min(MAX_KARMA, data.karma_max + 1)
+        context.state.draw_pile[:] = [
+            item
+            for item in context.state.draw_pile
+            if SLUGCAT_SPECS_BY_ID[item].card_type != "物品"
+        ]
+        data.unlocked_creature_counts.clear()
         for new_card_id, count in DISCOVERY_CONTENTS[card_id].items():
-            context.state.draw_pile.extend([new_card_id] * count)
+            if new_card_id in SLUGCAT_CREATURE_IDS:
+                data.unlocked_creature_counts[new_card_id] = count
+            else:
+                context.state.draw_pile.extend([new_card_id] * count)
         random.shuffle(context.state.draw_pile)
         _unlock_adjacent_discovery(data, card_id)
         context.announce(
             f"玩家{context.source_player_id}探索"
-            f"{SLUGCAT_SPECS_BY_ID[card_id].name}，牌组获得新的物品与生物"
+            f"{SLUGCAT_SPECS_BY_ID[card_id].name}，切换到新的物品与生物场景"
         )
         return True
 
@@ -308,11 +372,13 @@ def _discovery(card_id: int):
 
 def _unlock_adjacent_discovery(data, card_id: int) -> None:
     adjacent = DISCOVERY_ADJACENCY[card_id]
-    unseen = [item for item in adjacent if item not in data.seen_discoveries]
-    candidates = unseen or list(adjacent)
-    data.discovery_pool.append(
-        min(candidates, key=lambda item: data.discovery_pool.count(item))
-    )
+    unseen = [
+        item
+        for item in adjacent
+        if item not in data.seen_discoveries and item not in data.discovery_pool
+    ]
+    for candidate in reversed(unseen):
+        data.discovery_pool.insert(0, candidate)
 
 
 def _form(card_id: int):
@@ -331,7 +397,7 @@ def smoke_fruit(context):
     if not _pay_cost(context, 41):
         return False
     context.source.statuses.immune_next_attacks += 1
-    remove_first(context.state, 22)
+    kill_matching_creature(context, 22)
     context.announce(f"玩家{context.source_player_id}释放烟雾，将免疫下一次攻击")
     return True
 
@@ -346,10 +412,28 @@ def batfly_grass(context):
 def flash_fruit(context):
     if not _pay_cost(context, 43):
         return False
-    creature_id = pop_first_creature(context.state)
-    if creature_id is not None:
-        add_creature_threat(context.state, context.target_player_id, creature_id)
-        context.announce(f"闪光果将{SLUGCAT_SPECS_BY_ID[creature_id].name}赶向对手")
+    creatures = context.source.statuses.hand_creatures
+    if creatures:
+        labels = tuple(
+            f"{SLUGCAT_SPECS_BY_ID[item.card_id].name} #{index + 1}"
+            for index, item in enumerate(creatures)
+        )
+        selected = context.choices.choose_option(
+            "闪光果", "选择要转移的生物", labels, labels[0]
+        )
+        index = labels.index(selected) if selected in labels else 0
+        creature = creatures[index]
+        remove_hand_creature(context.state, context.source_player_id, creature.card_id)
+        add_threat(
+            context.state,
+            context.target_player_id,
+            creature.card_id,
+            owner_id=creature.owner_id,
+        )
+        context.announce(
+            f"闪光果将{SLUGCAT_SPECS_BY_ID[creature.card_id].name}赶向"
+            f"玩家{context.target_player_id}"
+        )
     else:
         context.target.statuses.attack_lock = 2
         context.announce(f"玩家{context.target_player_id}被致盲，需先打出两张非攻击牌")
@@ -378,20 +462,19 @@ def bubble_fruit(context):
         data.satiety += 1
         context.announce(f"玩家{context.source_player_id}把泡水果当作蓝果")
         return True
-    damage, _ = _attack_with_momentum(context, 1)
-    context.announce(
-        f"玩家{context.source_player_id}把泡水果当作石子（造成{damage}点伤害）"
-    )
+    damage = _attack_with_momentum(context, 1)
+    context.combat.resolve_attack(context, damage, "泡水果（石子）")
     return True
 
 
 def white_pearl(context):
     if not _pay_cost(context, 46):
         return False
-    if remove_first(context.state, 25):
+    scavenger = remove_hand_creature(context.state, context.source_player_id, 25)
+    if scavenger is not None:
         item = random.choices((1, 3, 4, 5), weights=(6, 1, 2, 1), k=1)[0]
         add_card_to_hand(context.state, item)
-        context.source.statuses.last_dead_creature_health = 5
+        context.source.statuses.last_dead_creature_health += 5
         context.announce("白珍珠换来了拾荒者携带的物品")
     else:
         context.source.statuses.scavenger_attraction = True
@@ -402,8 +485,14 @@ def white_pearl(context):
 def colored_pearl(context):
     if not _pay_cost(context, 47):
         return False
-    if remove_first(context.state, 25):
-        add_creature_threat(context.state, context.target_player_id, 25)
+    scavenger = remove_hand_creature(context.state, context.source_player_id, 25)
+    if scavenger is not None:
+        add_threat(
+            context.state,
+            context.target_player_id,
+            25,
+            owner_id=scavenger.owner_id,
+        )
         context.announce(
             f"玩家{context.source_player_id}雇佣拾荒者对付玩家"
             f"{context.target_player_id}"

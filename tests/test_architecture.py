@@ -81,7 +81,7 @@ class ArchitectureTests(unittest.TestCase):
         registry.freeze()
 
         self.assertEqual(registry.character_ids, (4,))
-        self.assertEqual(len(registry.get_catalog(4)), 49)
+        self.assertEqual(len(registry.get_catalog(4)), 51)
         with self.assertRaises(TypeError):
             registry.get_character(4).deck_counts[6] = 999
 

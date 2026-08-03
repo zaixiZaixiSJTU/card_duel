@@ -1,5 +1,7 @@
 """Shared active-turn workflow for the network server and client."""
 
+from contextlib import suppress
+
 import FreeSimpleGUI as sg
 
 from card_duel.core.game import TurnEngine, TurnPhase
@@ -35,7 +37,8 @@ def play_active_turn(session, player_id, round_number):
     ).name
     announce(f" [轮到玩家{player_id} ({character_name})]")
 
-    turn = TurnEngine(game_state, round_number, player_id, announce)
+    choices = GuiChoiceProvider(session.card_images)
+    turn = TurnEngine(game_state, round_number, player_id, announce, choices=choices)
     turn.register_phase_handler(
         TurnPhase.TURN_START,
         lambda context: session.combat.advance_turn_effects(
@@ -56,7 +59,9 @@ def play_active_turn(session, player_id, round_number):
 
     # 出牌阶段：仅在此阶段接受卡牌输入。
     _enter_phase(session, turn, TurnPhase.PLAY)
-    if not _run_card_play_phase(session, player_id, turn.opponent_id, announce):
+    if not _run_card_play_phase(
+        session, player_id, turn.opponent_id, announce, choices
+    ):
         return False
 
     # 弃牌阶段：将手牌整理至上限后才能继续。
@@ -69,6 +74,9 @@ def play_active_turn(session, player_id, round_number):
     print(" [你的回合结束]")
     refresh_cards(game_state, window, session.card_images)
     set_cards_enabled(window, False)
+    # End-phase effects mutate health, agility, creatures, and inserted items.
+    # Synchronize those values before handing control to the peer.
+    send_game_state(session)
     return True
 
 
@@ -81,14 +89,57 @@ def _enter_phase(session, turn, phase):
 
 
 def _draw_turn_cards(context):
-    draw_cards(context.game_state, 3)
+    if context.game_state.character_ids.get(context.player_id) == 4:
+        _draw_slugcat_cards(context.game_state, 2, 1, context.announce)
+    else:
+        draw_cards(context.game_state, 3)
 
 
-def _run_card_play_phase(session, player_id, opponent_id, announce):
+def _draw_slugcat_cards(game_state, skill_count, item_count, announce):
+    """Draw by type without ever actively drawing creature cards."""
+    from card_duel.cards.slugcat.specs import SLUGCAT_SPECS_BY_ID
+
+    drawn = []
+
+    def draw_type(card_type, amount):
+        for _ in range(amount):
+            index = next(
+                (
+                    index
+                    for index, card_id in enumerate(game_state.draw_pile)
+                    if SLUGCAT_SPECS_BY_ID[card_id].card_type == card_type
+                ),
+                None,
+            )
+            if index is None:
+                break
+            drawn.append(game_state.draw_pile.pop(index))
+
+    draw_type("技能", skill_count)
+    draw_type("物品", item_count)
+    while len(drawn) < skill_count + item_count:
+        index = next(
+            (
+                index
+                for index, card_id in enumerate(game_state.draw_pile)
+                if SLUGCAT_SPECS_BY_ID[card_id].card_type not in {"生物", "见闻"}
+            ),
+            None,
+        )
+        if index is None:
+            break
+        drawn.append(game_state.draw_pile.pop(index))
+    game_state.hand_cards.extend(drawn)
+    if drawn:
+        names = "、".join(SLUGCAT_SPECS_BY_ID[card_id].name for card_id in drawn)
+        announce(f"抽牌：{names}")
+    return len(drawn)
+
+
+def _run_card_play_phase(session, player_id, opponent_id, announce, choices):
     game_state = session.state
     window = session.require_window()
     set_cards_enabled(window, True)
-    choices = GuiChoiceProvider(session.card_images)
     while True:
         event, values = window.read(timeout=120)
         if event == sg.WIN_CLOSED:
@@ -120,10 +171,34 @@ def _run_card_play_phase(session, player_id, opponent_id, announce):
             combat=session.combat,
         ):
             if not definition.exhausted:
-                game_state.draw_pile.append(card_id)
-            game_state.hand_cards.pop(hand_index)
+                _return_card_after_use(game_state, player_id, card_id)
+            _remove_played_card(game_state, hand_index, card_id)
             refresh_cards(game_state, window, session.card_images)
             send_game_state(session)
+
+
+def _remove_played_card(game_state, original_index, card_id):
+    if (
+        original_index < len(game_state.hand_cards)
+        and game_state.hand_cards[original_index] == card_id
+    ):
+        game_state.hand_cards.pop(original_index)
+        return
+    with suppress(ValueError):
+        game_state.hand_cards.remove(card_id)
+
+
+def _return_card_after_use(game_state, player_id, card_id):
+    from card_duel.cards.slugcat.specs import SLUGCAT_DISCOVERY_IDS
+    from card_duel.cards.slugcat.state import SlugcatData, slugcat_data
+
+    player = game_state.players[player_id]
+    if card_id in SLUGCAT_DISCOVERY_IDS and isinstance(
+        player.character_data, SlugcatData
+    ):
+        slugcat_data(player).discovery_pool.append(card_id)
+    else:
+        game_state.draw_pile.append(card_id)
 
 
 def _run_discard_phase(session, announce):
@@ -132,7 +207,8 @@ def _run_discard_phase(session, announce):
     announce(" ---------------------------------------------------- ")
     announce(" [弃牌阶段]")
 
-    excess_cards = max(0, game_state.hand_size - HAND_LIMIT)
+    player_id = game_state.local_player_id
+    excess_cards = max(0, _effective_hand_size(game_state, player_id) - HAND_LIMIT)
     announce(f"需要弃牌:{excess_cards}" if excess_cards else "无需弃牌")
 
     while game_state.hand_size > 0:
@@ -144,7 +220,10 @@ def _run_discard_phase(session, announce):
             continue
 
         receive_pending_chat(session)
-        if event == "-btn1-" and game_state.hand_size <= HAND_LIMIT:
+        if (
+            event == "-btn1-"
+            and _effective_hand_size(game_state, player_id) <= HAND_LIMIT
+        ):
             return True
         if not isinstance(event, str) or not event.startswith("-BTN"):
             continue
@@ -152,7 +231,28 @@ def _run_discard_phase(session, announce):
         hand_index = int(event.removeprefix("-BTN").removesuffix("-"))
         if hand_index >= len(game_state.hand_cards):
             continue
-        game_state.draw_pile.append(game_state.hand_cards.pop(hand_index))
+        card_id = game_state.hand_cards[hand_index]
+        if not _can_discard(game_state, player_id, card_id):
+            announce("生物牌和插入物不可弃置")
+            continue
+        game_state.hand_cards.pop(hand_index)
+        _return_card_after_use(game_state, player_id, card_id)
         refresh_cards(game_state, window, session.card_images)
 
     return True
+
+
+def _effective_hand_size(game_state, player_id):
+    if game_state.character_ids.get(player_id) != 4:
+        return game_state.hand_size
+    from card_duel.cards.slugcat.hand import effective_hand_size
+
+    return effective_hand_size(game_state, player_id)
+
+
+def _can_discard(game_state, player_id, card_id):
+    if game_state.character_ids.get(player_id) != 4:
+        return card_id not in (49, 50)
+    from card_duel.cards.slugcat.specs import SLUGCAT_NO_DISCARD_IDS
+
+    return card_id not in SLUGCAT_NO_DISCARD_IDS

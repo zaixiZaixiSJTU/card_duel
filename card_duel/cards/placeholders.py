@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+from card_duel.cards.injected import definitions_for as inserted_definitions
 from card_duel.cards.models import CardDefinition, CharacterDefinition
 
 
@@ -54,7 +55,8 @@ def register(registry) -> None:
                         description="该角色仍在开发中",
                     )
                     for card_id in range(6)
-                ),
+                )
+                + inserted_definitions(character_id),
                 rules=PlaceholderRules(),
             )
         )

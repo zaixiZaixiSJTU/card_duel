@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import select
+import types
+from contextlib import suppress
 from dataclasses import asdict, fields, is_dataclass
+from typing import Union, get_args, get_origin, get_type_hints
 
 import FreeSimpleGUI as sg
 
@@ -14,7 +17,7 @@ from card_duel.ui.network_view import refresh_status
 
 DEFAULT_PORT = 65432
 MAX_CHAT_LENGTH = 200
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 MESSAGE_ANNOUNCEMENT = "announcement"
 MESSAGE_CHAT = "chat"
@@ -123,6 +126,7 @@ def send_game_state(session) -> None:
         session.connection,
         {"type": MESSAGE_STATE, "players": players, "defences": defences},
     )
+    _clear_transient_queues(state)
     _session_window(session).refresh()
 
 
@@ -161,6 +165,7 @@ def _apply_state_message(session, message) -> None:
         state.players[player_id].defences = [
             DefenceEffect.from_dict(item) for item in defence_payloads[str(player_id)]
         ]
+    _apply_local_pending_actions(session)
     session.combat.check_game_over()
     refresh_status(state, _session_window(session), session.registry)
 
@@ -172,8 +177,107 @@ def _apply_dataclass_values(instance, values) -> None:
     unknown = set(values) - allowed
     if unknown:
         raise ValueError(f"收到未知状态字段: {sorted(unknown)}")
+    annotations = get_type_hints(type(instance))
     for name, value in values.items():
-        setattr(instance, name, value)
+        setattr(instance, name, _coerce_value(annotations.get(name), value))
+
+
+def _coerce_value(annotation, value):
+    """Restore nested dataclasses and integer dictionary keys after JSON."""
+    if annotation is None or value is None:
+        return value
+    origin = get_origin(annotation)
+    arguments = get_args(annotation)
+    if origin is list and arguments:
+        return [_coerce_value(arguments[0], item) for item in value]
+    if origin is dict and len(arguments) == 2:
+        key_type, value_type = arguments
+        return {
+            _coerce_value(key_type, key): _coerce_value(value_type, item)
+            for key, item in value.items()
+        }
+    if origin in (Union, types.UnionType):
+        for candidate in arguments:
+            if candidate is type(None):
+                continue
+            try:
+                return _coerce_value(candidate, value)
+            except (TypeError, ValueError):
+                continue
+        return value
+    if isinstance(annotation, type) and is_dataclass(annotation):
+        hints = get_type_hints(annotation)
+        return annotation(
+            **{
+                field.name: _coerce_value(hints.get(field.name), value[field.name])
+                for field in fields(annotation)
+                if field.name in value
+            }
+        )
+    if annotation is int:
+        return int(value)
+    return value
+
+
+def _apply_local_pending_actions(session) -> None:
+    state = session.state
+    player_id = state.local_player_id
+    player = state.players[player_id]
+    statuses = player.statuses
+
+    state.hand_cards.extend(statuses.pending_hand_additions)
+    statuses.pending_hand_additions.clear()
+    for card_id in statuses.pending_hand_removals:
+        with suppress(ValueError):
+            state.hand_cards.remove(card_id)
+    statuses.pending_hand_removals.clear()
+
+    if statuses.pending_draw_returns:
+        if state.character_ids.get(player_id) == 4:
+            from card_duel.cards.slugcat.specs import SLUGCAT_DISCOVERY_IDS
+            from card_duel.cards.slugcat.state import slugcat_data
+
+            data = slugcat_data(player)
+            for card_id in statuses.pending_draw_returns:
+                if card_id in SLUGCAT_DISCOVERY_IDS:
+                    data.discovery_pool.append(card_id)
+                else:
+                    state.draw_pile.append(card_id)
+        else:
+            state.draw_pile.extend(statuses.pending_draw_returns)
+        statuses.pending_draw_returns.clear()
+
+    if statuses.pending_discards:
+        from card_duel.cards.slugcat.lifecycle import resolve_pending_discards
+
+        resolve_pending_discards(
+            state,
+            player_id,
+            announce=lambda message: _show_local_announcement(session, message),
+        )
+
+    from card_duel.ui.network_view import refresh_cards
+
+    refresh_cards(state, _session_window(session), session.card_images)
+
+
+def _show_local_announcement(session, message: str) -> None:
+    """Write private information to the local log without sending it to the peer."""
+    window = _session_window(session)
+    try:
+        window["-OUTPUT-"].update(f"{message}\n", append=True)
+    except (KeyError, TypeError):
+        try:
+            print(message)
+        except UnicodeEncodeError:
+            return
+
+
+def _clear_transient_queues(state) -> None:
+    for player in state.players.values():
+        player.statuses.pending_hand_additions.clear()
+        player.statuses.pending_hand_removals.clear()
+        player.statuses.pending_draw_returns.clear()
 
 
 def _dataclass_payload(instance):

@@ -35,7 +35,12 @@ SLUGCAT_CARD_SPECS = (
         "造成3点伤害并转换动能；穿透时额外失去10点生命并弃1张牌。",
     ),
     SlugcatCardSpec(
-        5, "电矛", "物品", 1, 2, "造成3点伤害并转换动能；穿透时插入并持续降低力量。"
+        5,
+        "电矛",
+        "物品",
+        1,
+        2,
+        "造成3点伤害并转换动能；穿透时插入，每回合开始力量-2/根。",
     ),
     SlugcatCardSpec(
         6, "猫猫小跳", "技能", 6, 0, "获得1点敏捷；下一张矛或石子再获得1点敏捷。"
@@ -46,7 +51,12 @@ SLUGCAT_CARD_SPECS = (
     SlugcatCardSpec(8, "一个滑铲", "技能", 3, 1, "获得4点动能。"),
     SlugcatCardSpec(9, "翻滚", "技能", 4, 0, "要求敏捷至少2；敏捷+2后全部转换为动能。"),
     SlugcatCardSpec(
-        10, "趴下", "技能", 4, 1, "清除敏捷和动能；向其他玩家加入随机生物。"
+        10,
+        "趴下",
+        "技能",
+        2,
+        0,
+        "清除敏捷和动能；本回合猫闯祸生成的生物进入对方手牌。",
     ),
     SlugcatCardSpec(11, "猫会后空翻", "技能", 3, 2, "获得4点动能和2点敏捷。"),
     SlugcatCardSpec(12, "猫睡觉", "技能", 6, 1, "消耗3点饱食度，获得1点业力。"),
@@ -56,17 +66,22 @@ SLUGCAT_CARD_SPECS = (
         "技能",
         8,
         0,
-        "按最近死亡生物生命值的五分之一获得饱食度，向上取整。",
+        "按最近死亡生物生命值的五分之一获得饱食度，向上取整。抽1张牌。",
     ),
     SlugcatCardSpec(
-        14, "猫跑路了", "技能", 8, None, "清除手牌生物，并按投入能量获得见闻牌。"
+        14,
+        "猫跑路了",
+        "技能",
+        8,
+        None,
+        "清除手牌生物，耗尽全部能量，抽X-1张见闻牌；见闻不足则抽普通牌。",
     ),
-    SlugcatCardSpec(15, "猫闯祸", "技能", 3, 2, "将1只随机生物加入自己的手牌。"),
+    SlugcatCardSpec(15, "猫闯祸", "技能", 3, 2, "从当前场景加入1只随机生物。抽2张牌。"),
     SlugcatCardSpec(
         16,
         "小面条",
         "生物",
-        5,
+        2,
         0,
         "1点生命；转移后使其后续打出耗能+1，否则死亡。",
         True,
@@ -85,7 +100,7 @@ SLUGCAT_CARD_SPECS = (
     ),
     SlugcatCardSpec(19, "秃鹫", "生物", 0, 2, "15点生命；打出后造成10点伤害。", True),
     SlugcatCardSpec(
-        20, "绿蜥蜴", "生物", 5, 2, "10点生命；静止一回合后造成5点伤害。", True
+        20, "绿蜥蜴", "生物", 3, 2, "10点生命；静止一回合后造成5点伤害。", True
     ),
     SlugcatCardSpec(21, "金蜥蜴", "生物", 0, 1, "6点生命；造成3点伤害。", True),
     SlugcatCardSpec(
@@ -113,10 +128,10 @@ SLUGCAT_CARD_SPECS = (
         True,
     ),
     SlugcatCardSpec(
-        26, "管虫", "生物", 0, 0, "1点生命；占用手牌位置，使见闻牌耗能-1。", True
+        26, "管虫", "生物", 0, 0, "1点生命；在场时见闻牌不占手牌上限。", True
     ),
     SlugcatCardSpec(
-        27, "工业郊区", "见闻", 3, 2, "加入拾荒者、射线虫、秃鹫、泡水果和矛类物品。"
+        27, "工业郊区", "见闻", 1, 2, "加入拾荒者、射线虫、秃鹫、泡水果和矛类物品。"
     ),
     SlugcatCardSpec(
         28, "阴影城堡", "见闻", 0, 2, "加入拾荒者、珍珠、闪光果、炸矛和炸药。"
@@ -155,6 +170,24 @@ SLUGCAT_CARD_SPECS = (
     ),
     SlugcatCardSpec(47, "有色珍珠", "物品", 0, 0, "吸引拾荒者；对拾荒者使用时雇佣它。"),
     SlugcatCardSpec(48, "质量稀释电池", "物品", 0, 4, "立即获得99点敏捷。"),
+    SlugcatCardSpec(
+        49,
+        "钢筋【插入】",
+        "物品",
+        0,
+        1,
+        "耗能1拔出体内钢筋；普通钢筋返回原主人的牌堆。不可弃牌。",
+        True,
+    ),
+    SlugcatCardSpec(
+        50,
+        "电矛【插入】",
+        "物品",
+        0,
+        1,
+        "耗能1拔出电矛并恢复本回合对应的力量；普通电矛返回原主人的牌堆。不可弃牌。",
+        True,
+    ),
 )
 
 SLUGCAT_SPECS_BY_ID = {spec.card_id: spec for spec in SLUGCAT_CARD_SPECS}
@@ -166,9 +199,27 @@ SLUGCAT_INITIAL_DECK_COUNTS = {
 }
 
 SLUGCAT_CREATURE_IDS = tuple(range(16, 27))
+SLUGCAT_INSERTED_IDS = (49, 50)
 SLUGCAT_DISCOVERY_IDS = tuple(range(27, 36))
 SLUGCAT_FORM_IDS = tuple(range(36, 41))
 SLUGCAT_ATTACK_ITEM_IDS = (1, 2, 3, 4, 5)
+SLUGCAT_NO_DISCARD_IDS = SLUGCAT_CREATURE_IDS + SLUGCAT_INSERTED_IDS
+
+CREATURE_BASE_HEALTH = {
+    16: 1,
+    17: 5,
+    18: 1,
+    19: 15,
+    20: 10,
+    21: 6,
+    22: 20,
+    23: 20,
+    24: 30,
+    25: 5,
+    26: 1,
+}
+
+LIZARD_IDS = (20, 21)
 
 DISCOVERY_CONTENTS = {
     27: {25: 5, 18: 3, 19: 1, 45: 5, 3: 1, 4: 1, 5: 1},

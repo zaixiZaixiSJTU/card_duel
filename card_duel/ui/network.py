@@ -22,6 +22,7 @@ from card_duel.ui.network_style import (
     FONT_HEADING,
     FONT_MONO,
     FONT_TITLE,
+    HAND_COLUMNS,
     MAX_HAND_BUTTONS,
     MAX_HEALTH_DISPLAY,
     PHASE_LABELS,
@@ -35,6 +36,8 @@ def _build_status_card(title, accent, key_prefix):
     energy_key = f"-{key_prefix}-EN-"
     defence_key = f"-{key_prefix}-DEF-"
     strength_key = f"-{key_prefix}-STR-"
+    defence_label_key = f"-{key_prefix}-DEF-LABEL-"
+    strength_label_key = f"-{key_prefix}-STR-LABEL-"
     orb_key = f"-{key_prefix}-ORB-"
     hp_bar_key = f"-{key_prefix}-HP-BAR-"
     special_key = f"-{key_prefix}-SPECIAL-"
@@ -100,6 +103,7 @@ def _build_status_card(title, accent, key_prefix):
         [
             sg.Text(
                 "防御",
+                key=defence_label_key,
                 font=FONT_BODY,
                 text_color=COLOR_MUTED,
                 background_color=COLOR_PAPER,
@@ -114,6 +118,7 @@ def _build_status_card(title, accent, key_prefix):
             ),
             sg.Text(
                 "力量",
+                key=strength_label_key,
                 font=FONT_BODY,
                 text_color=COLOR_GOLD,
                 background_color=COLOR_PAPER,
@@ -150,28 +155,28 @@ def _build_status_card(title, accent, key_prefix):
 
 
 def _build_card_grid(card_images, hand_cards):
-    card_row = []
+    card_rows = [[] for _ in range(MAX_HAND_BUTTONS // HAND_COLUMNS)]
     for button_index in range(MAX_HAND_BUTTONS):
         card_id = hand_cards[button_index] if button_index < len(hand_cards) else 0
         image_data = None
         if card_images:
             safe_card_id = card_id if 0 <= card_id < len(card_images) else 0
             image_data = card_images[safe_card_id]
-        card_row.append(
+        card_rows[button_index // HAND_COLUMNS].append(
             sg.Button(
                 image_data=image_data,
                 key=f"-BTN{button_index}-",
-                pad=(6, 5),
+                pad=(4, 4),
                 button_color=(COLOR_PAPER, COLOR_PAPER),
                 border_width=1,
             )
         )
 
     return sg.Column(
-        [card_row],
+        card_rows,
         scrollable=True,
-        size=(WINDOW_SIZE[0] - 70, 205),
-        vertical_scroll_only=False,
+        size=(WINDOW_SIZE[0] - 70, 430),
+        vertical_scroll_only=True,
         background_color=COLOR_PAPER,
         expand_x=True,
         key="-CARD-COL-",

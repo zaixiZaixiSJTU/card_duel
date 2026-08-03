@@ -3,7 +3,7 @@
 import FreeSimpleGUI as sg
 
 THEME = "SketchPaper"
-WINDOW_SIZE = (1200, 660)
+WINDOW_SIZE = (1280, 900)
 WINDOW_TITLE = "Card Duel · 手绘对战"
 
 COLOR_BACKGROUND = "#F5F0E6"
@@ -25,7 +25,8 @@ FONT_BODY = ("Microsoft YaHei UI", 11)
 FONT_BODY_BOLD = ("Microsoft YaHei UI", 11, "bold")
 FONT_MONO = ("Consolas", 10)
 
-MAX_HAND_BUTTONS = 12
+MAX_HAND_BUTTONS = 18
+HAND_COLUMNS = 6
 MAX_HEALTH_DISPLAY = 40
 MAX_ENERGY_ORBS = 8
 

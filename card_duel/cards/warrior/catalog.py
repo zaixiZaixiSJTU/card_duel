@@ -1,5 +1,6 @@
 """Warrior-owned card catalog and registration entry."""
 
+from card_duel.cards.injected import definitions_for as inserted_definitions
 from card_duel.cards.models import CardDefinition, CharacterDefinition
 from card_duel.cards.warrior import effects
 from card_duel.cards.warrior.lifecycle import WarriorRules
@@ -44,7 +45,7 @@ _CARDS = (
     CardDefinition(1, 14, "心连心", effects.heartlink, cost=2),
     CardDefinition(1, 15, "黑闪", effects.black_flash, cost=2),
     CardDefinition(1, 16, "燔祭", effects.burnt_offering, cost=3),
-)
+) + inserted_definitions(CHARACTER_ID)
 
 
 def register(registry) -> None:

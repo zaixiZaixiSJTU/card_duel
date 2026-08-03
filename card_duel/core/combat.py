@@ -47,8 +47,8 @@ def initialize_character_states(game_state):
     return _engine(game_state).initialize_players()
 
 
-def apply_damage(game_state, damage, target_player_id):
-    return _engine(game_state).apply_damage(damage, target_player_id)
+def apply_damage(game_state, damage, target_player_id, announce=None):
+    return _engine(game_state).apply_damage(damage, target_player_id, announce)
 
 
 def lose_life(game_state, amount, target_player_id):

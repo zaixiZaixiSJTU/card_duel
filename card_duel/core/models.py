@@ -12,6 +12,25 @@ CardId = int
 
 
 @dataclass(slots=True)
+class CreatureState:
+    """A creature currently carried in a hand or placed in a threat zone."""
+
+    card_id: CardId
+    health: int
+    owner_id: PlayerId
+    wait_turns: int = 0
+    noodle_cost: int = 0
+
+
+@dataclass(slots=True)
+class InsertedCardState:
+    """A foreign card inserted into a player's hand by an attack."""
+
+    card_id: CardId
+    owner_id: PlayerId
+
+
+@dataclass(slots=True)
 class CombatStatuses:
     """Cross-character effects that can be applied to any player."""
 
@@ -22,10 +41,15 @@ class CombatStatuses:
     embedded_steel_rods: int = 0
     embedded_electric_spears: int = 0
     electric_strength_penalty: int = 0
-    creature_threats: list[int] = field(default_factory=list)
-    creature_waits: dict[str, int] = field(default_factory=dict)
+    inserted_cards: list[InsertedCardState] = field(default_factory=list)
+    hand_creatures: list[CreatureState] = field(default_factory=list)
+    creature_threats: list[CreatureState] = field(default_factory=list)
+    noodle_fly_immunity_used: bool = False
     last_dead_creature_health: int = 0
     scavenger_attraction: bool = False
+    pending_hand_additions: list[CardId] = field(default_factory=list)
+    pending_hand_removals: list[CardId] = field(default_factory=list)
+    pending_draw_returns: list[CardId] = field(default_factory=list)
 
 
 @dataclass(slots=True)

@@ -34,17 +34,19 @@ class TurnContext:
     opponent_id: int
     phase: TurnPhase
     announce: Callable[[str], None]
+    choices: object | None = None
 
 
 class TurnEngine:
     """Advance one player's turn and dispatch registered phase handlers."""
 
-    def __init__(self, game_state, round_number, player_id, announce):
+    def __init__(self, game_state, round_number, player_id, announce, choices=None):
         self.game_state = game_state
         self.round_number = round_number
         self.player_id = player_id
         self.opponent_id = 2 if player_id == 1 else 1
         self.announce = announce
+        self.choices = choices
         self.current_phase = None
         self._phase_index = -1
         self._handlers = {phase: [] for phase in PHASE_SEQUENCE}
@@ -79,6 +81,7 @@ class TurnEngine:
             opponent_id=self.opponent_id,
             phase=phase,
             announce=self.announce,
+            choices=self.choices,
         )
         for _, handler in self._handlers[phase]:
             handler(context)

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-IMAGE_SIZE = (120, 180)
+IMAGE_SIZE = (160, 240)
 BUTTON_PAD = (5, 8)
 
 
@@ -27,39 +27,35 @@ def encode_image(path: str | Path, size: tuple[int, int] = IMAGE_SIZE) -> bytes:
 
 
 def load_character_images(character_id: int, registry) -> tuple[list[bytes], int]:
-    """Load a consecutive image pack or generate cards from the registry."""
+    """Load available artwork and generate every missing registered card."""
     image_dir = resolve_resource_path(f"assets/cards/{character_id}")
-    images: list[bytes] = []
-    card_id = 0
-    while image_dir.exists():
-        image_path = image_dir / f"img-{card_id}.jpg"
-        if not image_path.exists():
-            break
-        images.append(encode_image(image_path))
-        card_id += 1
-    if images:
-        return images, card_id - 1
-    return _generate_registered_card_images(character_id, registry)
-
-
-def _generate_registered_card_images(
-    character_id: int, registry
-) -> tuple[list[bytes], int]:
     definitions = {item.card_id: item for item in registry.get_catalog(character_id)}
-    playable_ids = [card_id for card_id in definitions if card_id]
-    if not playable_ids:
-        return [], 0
-    maximum = max(definitions)
-    return [
-        _render_card_placeholder(definitions.get(card_id))
-        for card_id in range(maximum + 1)
-    ], maximum
+    maximum = max(definitions, default=0)
+    images = []
+    for card_id in range(maximum + 1):
+        image_path = image_dir / f"img-{card_id}.jpg"
+        if image_path.exists():
+            images.append(encode_image(image_path))
+        else:
+            images.append(_render_card_placeholder(definitions.get(card_id)))
+    return images, maximum
 
 
-def _render_card_placeholder(definition) -> bytes:
+def render_card(definition, *, effective_cost=None, creature_health=None) -> bytes:
+    """Render one generated card with optional live cost and health values."""
+    return _render_card_placeholder(
+        definition,
+        effective_cost=effective_cost,
+        creature_health=creature_health,
+    )
+
+
+def _render_card_placeholder(
+    definition, *, effective_cost=None, creature_health=None
+) -> bytes:
     image = Image.new("RGB", IMAGE_SIZE, "#FFFDF8")
     draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((1, 1, 118, 178), radius=8, outline="#2E2A26", width=2)
+    draw.rounded_rectangle((1, 1, 158, 238), radius=10, outline="#2E2A26", width=2)
     if definition is None or definition.card_id == 0:
         return _encode_pil_image(image)
 
@@ -70,14 +66,24 @@ def _render_card_placeholder(definition) -> bytes:
         "见闻": "#719775",
         "形态": "#8B79A8",
     }.get(definition.card_type, "#837A70")
-    draw.rounded_rectangle((7, 7, 113, 31), radius=5, fill=accent)
-    draw.text((11, 10), definition.name, fill="#FFFDF8", font=_font(14, True))
-    cost_text = "X" if definition.cost is None else str(definition.cost)
-    draw.ellipse((92, 36, 112, 56), outline=accent, width=2)
-    draw.text((99, 39), cost_text, fill=accent, font=_font(9))
-    draw.text((10, 40), definition.card_type, fill=accent, font=_font(9))
-    for line_number, line in enumerate(_wrap_text(definition.description, 11)[:7]):
-        draw.text((10, 66 + line_number * 14), line, fill="#2E2A26", font=_font(8))
+    draw.rounded_rectangle((8, 8, 152, 40), radius=6, fill=accent)
+    draw.text((13, 13), definition.name, fill="#FFFDF8", font=_font(18, True))
+    shown_cost = definition.cost if effective_cost is None else effective_cost
+    cost_text = "X" if shown_cost is None else str(shown_cost)
+    cost_color = "#2E7D32" if effective_cost != definition.cost else accent
+    draw.ellipse((124, 48, 151, 75), outline=cost_color, width=3)
+    draw.text((133, 52), cost_text, fill=cost_color, font=_font(12, True))
+    draw.text((12, 52), definition.card_type, fill=accent, font=_font(12))
+    for line_number, line in enumerate(_wrap_text(definition.description, 13)[:8]):
+        draw.text((12, 84 + line_number * 18), line, fill="#2E2A26", font=_font(11))
+    if creature_health is not None:
+        draw.ellipse((122, 202, 153, 233), fill="#C86655")
+        draw.text(
+            (131, 207),
+            str(max(0, creature_health)),
+            fill="#FFFDF8",
+            font=_font(14, True),
+        )
     return _encode_pil_image(image)
 
 

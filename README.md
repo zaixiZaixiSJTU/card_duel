@@ -69,9 +69,10 @@ card_duel/
 │   └── slugcat/
 │       ├── state.py            # SlugcatData
 │       ├── hand.py             # 手牌区小型操作
+│       ├── creatures.py        # 生物区域、血量、目标选择与死亡结算
 │       ├── effects.py          # 蛞蝓猫卡牌效果
 │       ├── lifecycle.py        # 业力、敏捷、生物和阶段判定
-│       ├── specs.py            # 48 张卡牌静态规格
+│       ├── specs.py            # 50 张卡牌静态规格（含两种插入物）
 │       └── catalog.py          # 蛞蝓猫牌组和注册函数
 ├── core/
 │   ├── models.py               # GameState、CharacterState、通用状态
@@ -196,6 +197,8 @@ turn.register_phase_handler(
 ```
 
 每个 JSON 负载前有四字节大端长度。状态一次发送，不再使用字符串标记和多轮 `pass` ACK，连续或拆分的 TCP 数据都能正确恢复消息边界。
+
+当前协议版本为 2。生物、插入物和角色数据中的嵌套 dataclass 会按类型恢复；异步加入手牌、移除手牌、回归牌堆以及炸矛弃牌均在接收状态时立即处理。协议版本不一致时双方会拒绝进入对局。
 
 ## 新增角色
 

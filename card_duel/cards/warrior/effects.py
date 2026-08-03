@@ -41,8 +41,7 @@ def attack(context):
     if not _spend(context, 1):
         return False
     damage = 2 + context.source.strength
-    context.combat.apply_damage(damage, context.target_player_id)
-    context.announce(f"玩家{context.source_player_id}使用攻（造成{damage}伤害）")
+    context.combat.resolve_attack(context, damage, "攻")
     return True
 
 
@@ -59,8 +58,8 @@ def shield_bash(context):
         return False
     damage = 2 + context.source.strength
     add_defence(context.source.defences, 2)
-    context.combat.apply_damage(damage, context.target_player_id)
-    context.announce(f"玩家{context.source_player_id}使用盾击（伤害{damage}，防御+2）")
+    context.combat.resolve_attack(context, damage, "盾击")
+    context.announce(f"玩家{context.source_player_id}通过盾击获得2点防御")
     return True
 
 
@@ -93,8 +92,7 @@ def heavy_sword(context):
     if not _spend(context, 3):
         return False
     damage = 3 + 2 * context.source.strength
-    context.combat.apply_damage(damage, context.target_player_id)
-    context.announce(f"玩家{context.source_player_id}使用重剑打击（造成{damage}伤害）")
+    context.combat.resolve_attack(context, damage, "重剑打击")
     return True
 
 
@@ -102,8 +100,7 @@ def heavy_hammer(context):
     if not _spend(context, 7):
         return False
     damage = 10 + context.source.strength
-    context.combat.apply_damage(damage, context.target_player_id)
-    context.announce(f"玩家{context.source_player_id}使用重锤打击（造成{damage}伤害）")
+    context.combat.resolve_attack(context, damage, "重锤打击")
     return True
 
 
@@ -168,8 +165,7 @@ def full_body_slam(context):
     if not _spend(context, 4):
         return False
     damage = context.source.defence + context.source.strength
-    context.combat.apply_damage(damage, context.target_player_id)
-    context.announce(f"玩家{context.source_player_id}使用全身撞击（造成{damage}伤害）")
+    context.combat.resolve_attack(context, damage, "全身撞击")
     return True
 
 
@@ -212,8 +208,6 @@ def burnt_offering(context):
             context.source.energy += 3
         return False
     damage = count + 2 + context.source.strength
-    context.combat.apply_damage(damage, context.target_player_id)
-    context.announce(
-        f"玩家{context.source_player_id}使用燔祭（弃{count}牌，造成{damage}伤害）"
-    )
+    context.combat.resolve_attack(context, damage, "燔祭")
+    context.announce(f"玩家{context.source_player_id}为燔祭弃掉{count}张牌")
     return True

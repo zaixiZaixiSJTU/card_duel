@@ -11,9 +11,19 @@ from card_duel.core.models import CharacterState, GameState
 
 
 class CombatPort(Protocol):
-    def apply_damage(self, damage: int, target_player_id: int) -> int: ...
+    def apply_damage(
+        self, damage: int, target_player_id: int, announce=None
+    ) -> int: ...
 
     def lose_life(self, amount: int, target_player_id: int, announce=None) -> int: ...
+
+    def resolve_attack(
+        self,
+        context: CardPlayContext,
+        damage: int,
+        card_name: str,
+        on_player_penetrate=None,
+    ) -> int: ...
 
 
 class RegistryPort(Protocol):
