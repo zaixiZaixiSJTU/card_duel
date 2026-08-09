@@ -6,35 +6,20 @@ import time
 
 import FreeSimpleGUI as sg
 
-from card_duel.cards.registry import get_card_counts
-from card_duel.core.combat import (
-    CHARACTERS,
-    NetworkGameState,
-    build_shuffled_deck,
-    draw_cards,
-    initialize_character_states,
-    load_character_images,
-)
+from card_duel.core.models import GameState
+from card_duel.core.rules import draw_cards
 from card_duel.network.gameplay import play_active_turn
 from card_duel.network.protocol import (
-    ACK_MESSAGE,
     DEFAULT_PORT,
+    PROTOCOL_VERSION,
     receive_until_turn_change,
     signal_turn_change,
 )
-from card_duel.ui.network import (
-    WINDOW_SIZE,
-    WINDOW_TITLE,
-    bind_hand_card_events,
-    character_select_dialog,
-    colored_announce,
-    create_main_layout,
-    init_theme,
-    refresh_cards,
-    set_cards_enabled,
-    set_phase,
-    waiting_dialog,
-)
+from card_duel.network.session import GameSession
+from card_duel.network.setup import exchange_character_choices, prepare_game_window
+from card_duel.network.transport import receive_json
+from card_duel.ui.network_style import init_theme
+from card_duel.ui.network_view import refresh_cards, set_cards_enabled, set_phase
 
 MAX_CONNECTION_ATTEMPTS = 40
 
@@ -91,9 +76,7 @@ def connect_with_retry(port=DEFAULT_PORT):
 
         client_socket.settimeout(None)
         progress_window.close()
-        sg.popup_ok(
-            f"连接成功!\n服务器: {server_host}:{port}", keep_on_top=True
-        )
+        sg.popup_ok(f"连接成功!\n服务器: {server_host}:{port}", keep_on_top=True)
         return client_socket
 
     progress_window.close()
@@ -103,10 +86,14 @@ def connect_with_retry(port=DEFAULT_PORT):
 
 def receive_welcome_message(connection):
     connection.settimeout(5)
-    raw_message = connection.recv(1024)
-    welcome_message = json.loads(raw_message.decode("utf-8"))
-    connection.sendall(ACK_MESSAGE.encode("utf-8"))
-    connection.settimeout(None)
+    try:
+        welcome_message = receive_json(connection.recv)
+    finally:
+        connection.settimeout(None)
+    if welcome_message.get("type") != "welcome":
+        raise ConnectionError("服务器欢迎消息格式无效")
+    if welcome_message.get("protocol_version") != PROTOCOL_VERSION:
+        raise ConnectionError("客户端与服务器协议版本不一致")
     print(
         "=== 连接成功 ===\n"
         f"服务器时间: {welcome_message['server_time']}\n"
@@ -115,118 +102,67 @@ def receive_welcome_message(connection):
     )
 
 
-def exchange_character_choices(game_state):
-    selected_character = character_select_dialog()
-    if selected_character is None:
-        return False
-
-    waiting_window = waiting_dialog("等待对方选择...")
-    try:
-        game_state.character_ids[2] = int(selected_character)
-        game_state.connection.sendall(selected_character.encode("utf-8"))
-        peer_choice = game_state.connection.recv(1024).decode("utf-8")
-        game_state.character_ids[1] = int(peer_choice)
-        return True
-    finally:
-        waiting_window.close()
-
-
-def prepare_game_window(game_state):
-    initialize_character_states(game_state)
-    character_id = game_state.character_ids[2]
-    game_state.card_images, game_state.max_card_id = load_character_images(
-        character_id
+def run_client_game(session):
+    game_state = session.state
+    window = session.require_window()
+    set_phase(window, "对战开始")
+    print(" ---------------------------------------------------- ")
+    print(
+        f"你选择了: {session.registry.get_character(game_state.character_ids[2]).name}"
     )
-    if not game_state.card_images:
-        return False
-
-    peer_character_id = game_state.character_ids[1]
-    game_state.peer_card_images, _ = load_character_images(peer_character_id)
-
-    game_state.draw_pile = build_shuffled_deck(
-        1,
-        game_state.max_card_id,
-        get_card_counts(character_id),
+    print(
+        f"对手选择了: {session.registry.get_character(game_state.character_ids[1]).name}"
     )
-    layout = create_main_layout(
-        game_state.card_images,
-        game_state.hand_cards,
-        local_player_id=game_state.local_player_id,
-        character_ids=game_state.character_ids,
-    )
-    game_state.window = sg.Window(
-        WINDOW_TITLE,
-        layout,
-        size=WINDOW_SIZE,
-        font=("Microsoft YaHei", 10),
-        finalize=True,
-        keep_on_top=True,
-        resizable=True,
-    )
-    bind_hand_card_events(game_state)
-    refresh_cards(game_state)
-    return True
-
-
-def run_client_game(game_state):
-    set_phase(game_state, "对战开始")
-    colored_announce(game_state, " ---------------------------------------------------- ")
-    colored_announce(game_state, f"你选择了: {CHARACTERS[game_state.character_ids[2]]}")
-    colored_announce(game_state, f"对手选择了: {CHARACTERS[game_state.character_ids[1]]}")
-    colored_announce(game_state, "对手先出牌")
-    colored_announce(game_state, " ---------------------------------------------------- ")
+    print("对手先出牌")
+    print(" ---------------------------------------------------- ")
 
     draw_cards(game_state, 2)
-    refresh_cards(game_state)
+    refresh_cards(game_state, window, session.card_images)
     round_number = 1
 
-    while all(player.health > 0 for player in game_state.players.values()):
-        colored_announce(game_state, f"-------------------- ROUND {round_number} --------------------")
-        set_phase(game_state, f"回合 {round_number} - 对手出牌中...")
-        set_cards_enabled(game_state, False)
-        game_state.window.refresh()
+    while session.combat.winning_player_id() is None:
+        print(f"-------------------- ROUND {round_number} --------------------")
+        set_phase(window, f"回合 {round_number} - 对手出牌中...")
+        set_cards_enabled(window, False)
+        window.refresh()
 
-        receive_until_turn_change(game_state)
-        colored_announce(game_state, "[对手的回合结束]")
-        refresh_cards(game_state)
-        colored_announce(game_state, " ---------------------------------------------------- ")
+        receive_until_turn_change(session)
+        print("[对手的回合结束]")
+        refresh_cards(game_state, window, session.card_images)
+        print(" ---------------------------------------------------- ")
 
-        if not play_active_turn(game_state, player_id=2, round_number=round_number):
+        if not play_active_turn(session, player_id=2, round_number=round_number):
             return
-        # 必须在signal_turn_change之前同步一次TURN_END结算过的完整数值
-        # （钢筋流血/生物伤害等有播报但面板未更新的问题即因此缺失导致）。
-        refresh_status(game_state)
-        send_game_state(game_state)
-        signal_turn_change(game_state)
+        signal_turn_change(session)
         time.sleep(0.3)
-        colored_announce(game_state, " ---------------------------------------------------- ")
+        print(" ---------------------------------------------------- ")
         round_number += 1
 
-    set_phase(game_state, "游戏结束")
-    game_state.window.read()
+    set_phase(window, "游戏结束")
+    window.read()
 
 
 def main():
     init_theme()
-    game_state = NetworkGameState()
-    game_state.local_player_id = 2
-    game_state.connection = connect_with_retry()
-    if game_state.connection is None:
+    connection = connect_with_retry()
+    if connection is None:
         return
+    state = GameState(local_player_id=2)
+    session = GameSession(state=state, connection=connection)
 
     try:
-        receive_welcome_message(game_state.connection)
-        if not exchange_character_choices(game_state):
+        receive_welcome_message(connection)
+        if not exchange_character_choices(session, local_player_id=2):
             return
-        if not prepare_game_window(game_state):
+        if not prepare_game_window(session):
             return
-        run_client_game(game_state)
+        run_client_game(session)
     except (ConnectionError, OSError, ValueError, json.JSONDecodeError) as error:
         sg.popup_error(f"联网对战中断: {error}", keep_on_top=True)
     finally:
-        if game_state.window is not None:
-            game_state.window.close()
-        game_state.connection.close()
+        if session.window is not None:
+            session.window.close()
+        connection.close()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "card-duel"
+version = "0.4.0"
+description = "A two-player card duel game over TCP"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "FreeSimpleGUI",
+    "Pillow",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+card-duel-host = "card_duel.network.server:main"
+card-duel-join = "card_duel.network.client:main"
+
+[tool.setuptools.packages.find]
+include = ["card_duel*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

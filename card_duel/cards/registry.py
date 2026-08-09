@@ -1,156 +1,125 @@
-"""Central registration area for every playable card."""
+"""Generic card and character registry.
 
-from dataclasses import dataclass
-from typing import Callable
+This module intentionally imports no concrete character package.
+"""
 
-from card_duel.core import combat
-from card_duel.cards.slugcat import get_slugcat_handler
-from card_duel.cards.slugcat_data import (
-    SLUGCAT_CARD_SPECS,
-    SLUGCAT_CHARACTER_ID,
-    SLUGCAT_INITIAL_DECK_COUNTS,
+from __future__ import annotations
+
+from dataclasses import replace
+from inspect import signature
+from types import MappingProxyType
+
+from card_duel.application.choices import DEFAULT_CHOICES, ChoiceProvider
+from card_duel.cards.models import (
+    CardDefinition,
+    CardPlayContext,
+    CharacterDefinition,
 )
-
-CardHandler = Callable[..., bool | int]
-
-
-@dataclass(frozen=True)
-class CardDefinition:
-    """Static metadata and effect handler for one card."""
-
-    character_id: int
-    card_id: int
-    name: str
-    handler: CardHandler
-    exhausted: bool = False
-    card_type: str = "卡牌"
-    cost: int | None = None
-    description: str = ""
+from card_duel.core.models import GameState
 
 
-# 牌组构成与效果注册集中维护；新增卡牌只需要修改这一处。
-CARD_COUNTS_BY_CHARACTER = {
-    1: {
-        1: 6, 2: 6, 3: 2, 4: 1, 5: 1, 6: 2, 7: 1, 8: 2,
-        9: 2, 10: 1, 11: 2, 12: 1, 13: 1, 14: 1, 15: 1, 16: 1,
-    },
-    2: {1: 2, 2: 3, 3: 1, 4: 4, 5: 2},
-    3: {1: 2, 2: 3, 3: 1, 4: 4, 5: 2},
-    SLUGCAT_CHARACTER_ID: SLUGCAT_INITIAL_DECK_COUNTS,
-}
+class CardRegistry:
+    """Validated runtime catalog assembled by the application composition root."""
 
-CARD_REGISTRY = {
-    (0, 0): CardDefinition(0, 0, "不可用", combat.play_unavailable_card),
-    (1, 0): CardDefinition(1, 0, "不可用", combat.play_unavailable_card),
-    (1, 1): CardDefinition(1, 1, "攻", combat.play_attack_card),
-    (1, 2): CardDefinition(1, 2, "防", combat.play_defend_card),
-    (1, 3): CardDefinition(1, 3, "盾击", combat.play_shield_bash_card),
-    (1, 4): CardDefinition(1, 4, "背包之神", combat.play_pack_god_card),
-    (1, 5): CardDefinition(1, 5, "献祭", combat.play_sacrifice_card),
-    (1, 6): CardDefinition(1, 6, "重剑打击", combat.play_heavy_sword_card),
-    (1, 7): CardDefinition(1, 7, "重锤打击", combat.play_heavy_hammer_card),
-    (1, 8): CardDefinition(1, 8, "燃烧", combat.play_burn_card),
-    (1, 9): CardDefinition(1, 9, "糖原堆积", combat.play_glycogen_card),
-    (1, 10): CardDefinition(
-        1, 10, "壁垒", combat.play_bastion_card, exhausted=True
-    ),
-    (1, 11): CardDefinition(1, 11, "巩固", combat.play_consolidate_card),
-    (1, 12): CardDefinition(
-        1, 12, "全身撞击", combat.play_full_body_slam_card
-    ),
-    (1, 13): CardDefinition(
-        1,
-        13,
-        "不动如山",
-        combat.play_immovable_mountain_card,
-        exhausted=True,
-    ),
-    (1, 14): CardDefinition(1, 14, "心连心", combat.play_heartlink_card),
-    (1, 15): CardDefinition(1, 15, "黑闪", combat.play_black_flash_card),
-    (1, 16): CardDefinition(1, 16, "燔祭", combat.play_burnt_offering_card),
-    (2, 0): CardDefinition(2, 0, "未实现", combat.play_unavailable_card),
-    (3, 0): CardDefinition(3, 0, "未实现", combat.play_unavailable_card),
-    (SLUGCAT_CHARACTER_ID, 0): CardDefinition(
-        SLUGCAT_CHARACTER_ID,
-        0,
-        "不可用",
-        combat.play_unavailable_card,
-    ),
-}
+    def __init__(self) -> None:
+        self._characters: dict[int, CharacterDefinition] = {}
+        self._cards: dict[tuple[int, int], CardDefinition] = {}
+        self._frozen = False
 
-CARD_REGISTRY.update(
-    {
-        (SLUGCAT_CHARACTER_ID, spec.card_id): CardDefinition(
-            character_id=SLUGCAT_CHARACTER_ID,
-            card_id=spec.card_id,
-            name=spec.name,
-            handler=get_slugcat_handler(spec.card_id),
-            exhausted=spec.exhausted,
-            card_type=spec.card_type,
-            cost=spec.cost,
-            description=spec.description,
+    def register_character(self, definition: CharacterDefinition) -> None:
+        if self._frozen:
+            raise RuntimeError("注册表已冻结")
+        if definition.character_id in self._characters:
+            raise ValueError(f"角色 {definition.character_id} 重复注册")
+
+        card_ids = {card.card_id for card in definition.cards}
+        if 0 not in card_ids:
+            raise ValueError(f"角色 {definition.character_id} 缺少 0 号占位卡")
+        missing = set(definition.deck_counts) - card_ids
+        if missing:
+            raise ValueError(
+                f"角色 {definition.character_id} 的牌组引用未注册卡牌: {sorted(missing)}"
+            )
+        if any(count < 0 for count in definition.deck_counts.values()):
+            raise ValueError(f"角色 {definition.character_id} 的卡牌数量不能为负")
+
+        pending_cards = {}
+        for card in definition.cards:
+            if card.character_id != definition.character_id:
+                raise ValueError(f"卡牌 {card.card_id} 的角色编号与角色目录不一致")
+            key = (card.character_id, card.card_id)
+            if key in self._cards or key in pending_cards:
+                raise ValueError(f"卡牌 {key} 重复注册")
+            if len(signature(card.handler).parameters) != 1:
+                raise TypeError(f"卡牌 {key} 的处理器必须只接收 CardPlayContext")
+            pending_cards[key] = card
+        self._cards.update(pending_cards)
+        self._characters[definition.character_id] = replace(
+            definition,
+            deck_counts=MappingProxyType(dict(definition.deck_counts)),
+            cards=tuple(definition.cards),
         )
-        for spec in SLUGCAT_CARD_SPECS
-    }
-)
 
+    def freeze(self) -> CardRegistry:
+        self.validate()
+        self._frozen = True
+        return self
 
-def get_card_counts(character_id):
-    """Return a copy so callers cannot mutate the registry configuration."""
-    return CARD_COUNTS_BY_CHARACTER[character_id].copy()
+    def validate(self) -> None:
+        if not self._characters:
+            raise ValueError("注册表没有可用角色")
+        for character_id, definition in self._characters.items():
+            for card_id in definition.deck_counts:
+                self.get_card(character_id, card_id)
 
+    def get_character(self, character_id: int) -> CharacterDefinition:
+        try:
+            return self._characters[character_id]
+        except KeyError as error:
+            raise KeyError(f"角色 {character_id} 未注册") from error
 
-_FALLBACK_DEFINITION = CardDefinition(
-    character_id=0,
-    card_id=0,
-    name="未知卡牌",
-    handler=combat.play_unavailable_card,
-    exhausted=True,
-    card_type="其他",
-    cost=None,
-    description="此卡牌无法被打出。",
-)
+    def get_card(self, character_id: int, card_id: int) -> CardDefinition:
+        try:
+            return self._cards[(character_id, card_id)]
+        except KeyError as error:
+            raise KeyError(f"角色 {character_id} 未注册卡牌 {card_id}") from error
 
+    def get_deck_counts(self, character_id: int) -> dict[int, int]:
+        return dict(self.get_character(character_id).deck_counts)
 
-def get_card_definition(character_id, card_id):
-    """Return the card definition, or a fallback for unregistered cards.
-
-    Creature cards from the Slugcat character can end up in other players'
-    hands (via transfers / insertions).  Returning a fallback instead of
-    raising ``KeyError`` lets the UI display them and prevents crashes when
-    the player tries to interact with them.
-    """
-    return CARD_REGISTRY.get(
-        (character_id, card_id), _FALLBACK_DEFINITION
-    )
-
-
-def get_character_card_catalog(character_id):
-    """Return registered definitions ordered by card id for UI rendering."""
-    return [
-        definition
-        for (registered_character_id, _), definition in sorted(
-            CARD_REGISTRY.items(), key=lambda item: item[0]
+    def get_catalog(self, character_id: int) -> tuple[CardDefinition, ...]:
+        return tuple(
+            sorted(
+                self.get_character(character_id).cards,
+                key=lambda definition: definition.card_id,
+            )
         )
-        if registered_character_id == character_id
-    ]
 
-
-def play_registered_card(
-    game_state,
-    character_id,
-    card_id,
-    source_player_id,
-    target_player_id,
-    announce,
-    ignore_cost=False,
-):
-    """Resolve a card through the registry instead of a hard-coded map."""
-    definition = get_card_definition(character_id, card_id)
-    return definition.handler(
-        game_state,
-        source_player_id,
-        target_player_id,
+    def play(
+        self,
+        *,
+        state: GameState,
+        character_id: int,
+        card_id: int,
+        source_player_id: int,
+        target_player_id: int,
         announce,
-        ignore_cost,
-    )
+        combat,
+        choices: ChoiceProvider | None = None,
+        ignore_cost: bool = False,
+    ) -> bool | int:
+        context = CardPlayContext(
+            state=state,
+            source_player_id=source_player_id,
+            target_player_id=target_player_id,
+            announce=announce,
+            choices=choices or DEFAULT_CHOICES,
+            combat=combat,
+            registry=self,
+            ignore_cost=ignore_cost,
+        )
+        return self.get_card(character_id, card_id).handler(context)
+
+    @property
+    def character_ids(self) -> tuple[int, ...]:
+        return tuple(sorted(self._characters))
