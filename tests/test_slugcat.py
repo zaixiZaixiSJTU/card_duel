@@ -32,11 +32,40 @@ class SlugcatTests(unittest.TestCase):
             combat=self.combat,
         )
 
-    def test_initial_deck_contains_only_ten_skill_cards(self):
+    def test_initial_deck_keeps_source_cards_but_excludes_special_pools(self):
         counts = DEFAULT_REGISTRY.get_deck_counts(4)
 
-        self.assertEqual(set(counts), set(range(6, 16)))
-        self.assertEqual(sum(counts.values()), 47)
+        self.assertEqual(
+            set(counts),
+            {
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                36,
+                37,
+                38,
+                39,
+                40,
+                42,
+                44,
+                46,
+            },
+        )
+        self.assertEqual(sum(counts.values()), 107)
+        self.assertTrue(set(counts).isdisjoint(range(16, 36)))
+        self.assertTrue(set(counts).isdisjoint((49, 50)))
 
     def test_attack_converts_all_momentum_into_damage(self):
         slugcat_data(self.game.players[1]).momentum = 4
@@ -195,6 +224,27 @@ class SlugcatTests(unittest.TestCase):
             )
         )
         self.assertEqual(self.game.players[1].statuses.pending_draw_returns, [1])
+
+    def test_scavenger_item_name_is_reported_only_to_its_owner(self):
+        private_messages = []
+        add_hand_creature(self.game, 1, 25, owner_id=1)
+
+        self.assertTrue(
+            DEFAULT_REGISTRY.play(
+                state=self.game,
+                character_id=4,
+                card_id=46,
+                source_player_id=1,
+                target_player_id=2,
+                announce=self.messages.append,
+                private_announce=private_messages.append,
+                combat=self.combat,
+            )
+        )
+
+        self.assertTrue(any("携带的物品" in message for message in self.messages))
+        self.assertFalse(any("仅自己可见" in message for message in self.messages))
+        self.assertTrue(any("仅自己可见" in message for message in private_messages))
 
 
 if __name__ == "__main__":

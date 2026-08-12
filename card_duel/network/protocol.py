@@ -12,15 +12,18 @@ import FreeSimpleGUI as sg
 
 from card_duel.core.models import DefenceEffect
 from card_duel.network.transport import receive_json, send_json
+from card_duel.ui.deck_viewer import DECK_VIEW_KEY, open_deck_viewer
+from card_duel.ui.network_log import append_log
 from card_duel.ui.network_style import CHAT_INPUT_KEY, CHAT_SEND_KEY
-from card_duel.ui.network_view import refresh_status
+from card_duel.ui.network_view import refresh_status, show_played_card
 
 DEFAULT_PORT = 65432
 MAX_CHAT_LENGTH = 200
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 MESSAGE_ANNOUNCEMENT = "announcement"
 MESSAGE_CHAT = "chat"
+MESSAGE_CARD_PLAYED = "card_played"
 MESSAGE_STATE = "state"
 MESSAGE_TURN_CHANGE = "turn_change"
 
@@ -50,6 +53,9 @@ def _receive_bytes_with_ui(
             if allow_chat and event == CHAT_SEND_KEY:
                 send_chat_message(session, values.get(CHAT_INPUT_KEY, ""))
                 continue
+            if event == DECK_VIEW_KEY:
+                open_deck_viewer(session)
+                continue
             try:
                 return connection.recv(byte_count)
             except TimeoutError:
@@ -74,7 +80,7 @@ def send_chat_message(session, message: str) -> bool:
         session.connection,
         {"type": MESSAGE_CHAT, "message": clean_message},
     )
-    print(f"[我] {clean_message}")
+    append_log(session, f"[我] {clean_message}")
     window = _session_window(session)
     window[CHAT_INPUT_KEY].update("")
     window.refresh()
@@ -86,12 +92,12 @@ def receive_pending_chat(session) -> None:
         message = _receive_message(session)
         if message.get("type") != MESSAGE_CHAT:
             raise ConnectionError(f"行动阶段收到非预期消息: {message.get('type')}")
-        _show_peer_chat(message.get("message", ""))
+        _show_peer_chat(session, message.get("message", ""))
         _session_window(session).refresh()
 
 
-def _show_peer_chat(message: str) -> None:
-    print(f"[对方] {message}")
+def _show_peer_chat(session, message: str) -> None:
+    append_log(session, f"[对方] {message}")
 
 
 def send_announcement(session, message: str) -> None:
@@ -99,12 +105,31 @@ def send_announcement(session, message: str) -> None:
         session.connection,
         {"type": MESSAGE_ANNOUNCEMENT, "message": message},
     )
-    print(message)
+    append_log(session, message)
+
+
+def send_card_played(session, player_id: int, character_id: int, card_id: int) -> None:
+    """Publish the last played card without exposing either player's hand."""
+    show_played_card(session, player_id, character_id, card_id)
+    send_json(
+        session.connection,
+        {
+            "type": MESSAGE_CARD_PLAYED,
+            "player_id": player_id,
+            "character_id": character_id,
+            "card_id": card_id,
+        },
+    )
 
 
 def send_game_state(session) -> None:
     state = session.state
-    refresh_status(state, _session_window(session), session.registry)
+    refresh_status(
+        state,
+        _session_window(session),
+        session.registry,
+        getattr(session, "status_snapshots", None),
+    )
     players = {
         str(player_id): {
             "energy": player.energy,
@@ -135,14 +160,26 @@ def receive_until_turn_change(session) -> None:
         message = _receive_message(session, allow_chat=True)
         message_type = message.get("type")
         if message_type == MESSAGE_TURN_CHANGE:
-            refresh_status(session.state, _session_window(session), session.registry)
+            refresh_status(
+                session.state,
+                _session_window(session),
+                session.registry,
+                getattr(session, "status_snapshots", None),
+            )
             return
         if message_type == MESSAGE_STATE:
             _apply_state_message(session, message)
         elif message_type == MESSAGE_CHAT:
-            _show_peer_chat(message.get("message", ""))
+            _show_peer_chat(session, message.get("message", ""))
         elif message_type == MESSAGE_ANNOUNCEMENT:
-            print(message.get("message", ""))
+            append_log(session, message.get("message", ""))
+        elif message_type == MESSAGE_CARD_PLAYED:
+            show_played_card(
+                session,
+                int(message["player_id"]),
+                int(message["character_id"]),
+                int(message["card_id"]),
+            )
         else:
             raise ConnectionError(f"未知联机消息类型: {message_type}")
         _session_window(session).refresh()
@@ -167,7 +204,12 @@ def _apply_state_message(session, message) -> None:
         ]
     _apply_local_pending_actions(session)
     session.combat.check_game_over()
-    refresh_status(state, _session_window(session), session.registry)
+    refresh_status(
+        state,
+        _session_window(session),
+        session.registry,
+        getattr(session, "status_snapshots", None),
+    )
 
 
 def _apply_dataclass_values(instance, values) -> None:
@@ -253,24 +295,12 @@ def _apply_local_pending_actions(session) -> None:
         resolve_pending_discards(
             state,
             player_id,
-            announce=lambda message: _show_local_announcement(session, message),
+            announce=lambda message: append_log(session, message),
         )
 
     from card_duel.ui.network_view import refresh_cards
 
     refresh_cards(state, _session_window(session), session.card_images)
-
-
-def _show_local_announcement(session, message: str) -> None:
-    """Write private information to the local log without sending it to the peer."""
-    window = _session_window(session)
-    try:
-        window["-OUTPUT-"].update(f"{message}\n", append=True)
-    except (KeyError, TypeError):
-        try:
-            print(message)
-        except UnicodeEncodeError:
-            return
 
 
 def _clear_transient_queues(state) -> None:

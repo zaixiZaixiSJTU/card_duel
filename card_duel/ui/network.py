@@ -2,6 +2,7 @@
 
 import FreeSimpleGUI as sg
 
+from card_duel.ui.deck_viewer import DECK_VIEW_KEY
 from card_duel.ui.network_style import (
     CHAT_INPUT_KEY,
     CHAT_SEND_KEY,
@@ -142,6 +143,19 @@ def _build_status_card(title, accent, key_prefix):
                 size=(31, 1),
             )
         ],
+        [
+            sg.Text(
+                "最近出牌",
+                font=("Microsoft YaHei UI", 9),
+                text_color=COLOR_MUTED,
+                background_color=COLOR_PAPER,
+            ),
+            sg.Image(
+                key=f"-{key_prefix}-PLAYED-",
+                size=(64, 96),
+                background_color=COLOR_PAPER_DARK,
+            ),
+        ],
     ]
     return sg.Frame(
         "",
@@ -248,7 +262,7 @@ def create_main_layout(card_images, hand_cards):
                     size=(55, 10),
                     key="-OUTPUT-",
                     autoscroll=True,
-                    reroute_stdout=True,
+                    reroute_stdout=False,
                     disabled=True,
                     font=FONT_MONO,
                     background_color=COLOR_PAPER,
@@ -332,6 +346,13 @@ def create_main_layout(card_images, hand_cards):
                     text_color=COLOR_GREEN,
                     background_color=COLOR_PAPER,
                     size=(4, 1),
+                ),
+                sg.Button(
+                    "查看牌堆",
+                    key=DECK_VIEW_KEY,
+                    font=FONT_BODY_BOLD,
+                    button_color=(COLOR_INK, COLOR_PAPER_DARK),
+                    border_width=1,
                 ),
                 sg.Button(
                     "完成当前阶段  →",

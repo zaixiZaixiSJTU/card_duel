@@ -1,5 +1,10 @@
 """State-to-widget rendering for the network game."""
 
+import base64
+import io
+
+from PIL import Image
+
 from card_duel.ui.network_style import (
     COLOR_BLUE,
     COLOR_DISABLED,
@@ -15,7 +20,7 @@ from card_duel.ui.network_style import (
 )
 
 
-def refresh_status(game_state, window, registry):
+def refresh_status(game_state, window, registry, snapshots=None):
     local_player = game_state.players[game_state.local_player_id]
     opponent_player = game_state.players[game_state.opponent_player_id]
     _update_player_status(
@@ -25,6 +30,16 @@ def refresh_status(game_state, window, registry):
         game_state.local_character_id,
         _format_character_status(game_state, game_state.local_player_id, registry),
     )
+    if snapshots is not None:
+        _flash_changed_values(
+            window,
+            "MY",
+            snapshots.get(game_state.local_player_id),
+            _player_value_snapshot(local_player, game_state.local_character_id),
+        )
+        snapshots[game_state.local_player_id] = _player_value_snapshot(
+            local_player, game_state.local_character_id
+        )
     _update_player_status(
         window,
         "EN",
@@ -32,7 +47,17 @@ def refresh_status(game_state, window, registry):
         game_state.opponent_character_id,
         _format_character_status(game_state, game_state.opponent_player_id, registry),
     )
-    window["-DECK-COUNT-"].update(str(len(game_state.draw_pile)))
+    if snapshots is not None:
+        _flash_changed_values(
+            window,
+            "EN",
+            snapshots.get(game_state.opponent_player_id),
+            _player_value_snapshot(opponent_player, game_state.opponent_character_id),
+        )
+        snapshots[game_state.opponent_player_id] = _player_value_snapshot(
+            opponent_player, game_state.opponent_character_id
+        )
+    _safe_update(window, "-DECK-COUNT-", str(len(game_state.draw_pile)))
     hand_count = str(game_state.hand_size)
     if game_state.local_character_id == 4:
         from card_duel.cards.slugcat.hand import effective_hand_size
@@ -40,18 +65,20 @@ def refresh_status(game_state, window, registry):
         effective = effective_hand_size(game_state, game_state.local_player_id)
         if effective != game_state.hand_size:
             hand_count = f"{effective}/{game_state.hand_size}"
-    window["-HAND-COUNT-"].update(hand_count)
-    window.refresh()
+    _safe_update(window, "-HAND-COUNT-", hand_count)
+    _safe_refresh(window)
 
 
 def _update_player_status(
     window, key_prefix, player, character_id, character_status=""
 ):
-    window[f"-{key_prefix}-HP-"].update(
+    _safe_update(
+        window,
+        f"-{key_prefix}-HP-",
         str(player.health),
         text_color=COLOR_RED if player.health <= 10 else COLOR_INK,
     )
-    window[f"-{key_prefix}-EN-"].update(str(player.energy))
+    _safe_update(window, f"-{key_prefix}-EN-", str(player.energy))
     if character_id == 4:
         from card_duel.cards.slugcat.state import slugcat_data
 
@@ -61,15 +88,15 @@ def _update_player_status(
     else:
         defence_label, defence_value = "防御", player.defence
         strength_label, strength_value = "力量", player.strength
-    window[f"-{key_prefix}-DEF-LABEL-"].update(defence_label)
-    window[f"-{key_prefix}-STR-LABEL-"].update(strength_label)
-    window[f"-{key_prefix}-DEF-"].update(str(defence_value))
-    window[f"-{key_prefix}-STR-"].update(str(strength_value))
-    window[f"-{key_prefix}-HP-BAR-"].update(
-        max(0, min(MAX_HEALTH_DISPLAY, player.health))
+    _safe_update(window, f"-{key_prefix}-DEF-LABEL-", defence_label)
+    _safe_update(window, f"-{key_prefix}-STR-LABEL-", strength_label)
+    _safe_update(window, f"-{key_prefix}-DEF-", str(defence_value))
+    _safe_update(window, f"-{key_prefix}-STR-", str(strength_value))
+    _safe_update(
+        window, f"-{key_prefix}-HP-BAR-", max(0, min(MAX_HEALTH_DISPLAY, player.health))
     )
-    window[f"-{key_prefix}-ORB-"].update(_format_energy_orbs(player.energy))
-    window[f"-{key_prefix}-SPECIAL-"].update(character_status)
+    _safe_update(window, f"-{key_prefix}-ORB-", _format_energy_orbs(player.energy))
+    _safe_update(window, f"-{key_prefix}-SPECIAL-", character_status)
 
 
 def _format_character_status(game_state, player_id, registry):
@@ -119,14 +146,19 @@ def refresh_cards(game_state, window, card_images):
                 effective_cost=effective_cost,
                 creature_health=creature.health if creature is not None else None,
             )
-        window[f"-BTN{hand_index}-"].update(image_data=image_data, visible=True)
+        _safe_update(
+            window,
+            f"-BTN{hand_index}-",
+            image_data=image_data,
+            visible=True,
+        )
         _apply_card_border(
             window[f"-BTN{hand_index}-"],
             "#C86655" if card_id in (49, 50) else "#C39A55",
             card_id in (49, 50) or creature is not None,
         )
     for button_index in range(visible_count, MAX_HAND_BUTTONS):
-        window[f"-BTN{button_index}-"].update(visible=False)
+        _safe_update(window, f"-BTN{button_index}-", visible=False)
 
 
 def _apply_card_border(element, color, emphasized):
@@ -145,7 +177,7 @@ def _apply_card_border(element, color, emphasized):
 
 
 def set_phase(window, phase_text):
-    window["-PHASE-"].update(phase_text)
+    _safe_update(window, "-PHASE-", phase_text)
     active_phase_index = next(
         (
             index
@@ -156,25 +188,99 @@ def set_phase(window, phase_text):
     )
     for phase_index in range(len(PHASE_LABELS)):
         is_active = phase_index == active_phase_index
-        window[f"-PHASE-STEP-{phase_index}-"].update(
+        _safe_update(
+            window,
+            f"-PHASE-STEP-{phase_index}-",
             text_color=COLOR_PAPER if is_active else COLOR_MUTED,
             background_color=COLOR_BLUE if is_active else COLOR_PAPER,
         )
-    window.refresh()
+    _safe_refresh(window)
 
 
 def set_cards_enabled(window, enabled):
-    window["-btn1-"].update(
+    _safe_update(
+        window,
+        "-btn1-",
         disabled=not enabled,
         button_color=(
             (COLOR_PAPER, COLOR_GREEN) if enabled else (COLOR_MUTED, COLOR_DISABLED)
         ),
     )
     if "-CARD-HINT-" in window.AllKeysDict:
-        window["-CARD-HINT-"].update(
+        _safe_update(
+            window,
+            "-CARD-HINT-",
             "挑一张牌，慢慢想。" if enabled else "等对手落笔……",
             text_color=COLOR_GREEN if enabled else COLOR_MUTED,
         )
+
+
+def show_played_card(session, player_id: int, character_id: int, card_id: int) -> None:
+    """Show the latest played card in the correct public player panel."""
+    from card_duel.core.resources import render_card
+
+    definition = session.registry.get_card(character_id, card_id)
+    prefix = "MY" if player_id == session.state.local_player_id else "EN"
+    _safe_update(
+        session.require_window(),
+        f"-{prefix}-PLAYED-",
+        data=_thumbnail(render_card(definition)),
+    )
+
+
+def _player_value_snapshot(player, character_id) -> tuple[int, int, int, int]:
+    if character_id == 4:
+        from card_duel.cards.slugcat.state import slugcat_data
+
+        data = slugcat_data(player)
+        return player.health, player.energy, data.agility, data.momentum
+    return player.health, player.energy, player.defence, player.strength
+
+
+def _flash_changed_values(window, prefix, previous, current) -> None:
+    """Briefly tint changed values without blocking the network event loop."""
+    if previous is None:
+        return
+    for suffix, before, after in zip(
+        ("HP", "EN", "DEF", "STR"), previous, current, strict=True
+    ):
+        if before == after:
+            continue
+        color = COLOR_GREEN if after > before else COLOR_RED
+        try:
+            widget = window[f"-{prefix}-{suffix}-"].Widget
+            widget.configure(background=color)
+            window.TKroot.after(
+                420,
+                lambda item=widget: item.configure(background=COLOR_PAPER),
+            )
+        except Exception:
+            continue
+
+
+def _thumbnail(image_data: bytes, size=(64, 96)) -> bytes:
+    raw = base64.b64decode(image_data)
+    with Image.open(io.BytesIO(raw)) as image:
+        image.thumbnail(size, Image.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue())
+
+
+def _safe_update(window, key, *args, **kwargs) -> bool:
+    """Avoid crashing when a Tk element disappears during socket shutdown."""
+    try:
+        window[key].update(*args, **kwargs)
+        return True
+    except Exception:
+        return False
+
+
+def _safe_refresh(window) -> None:
+    try:
+        window.refresh()
+    except Exception:
+        return
 
 
 def _format_energy_orbs(value):

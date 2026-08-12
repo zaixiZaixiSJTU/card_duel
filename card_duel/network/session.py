@@ -21,6 +21,8 @@ class GameSession:
     window: Any | None = None
     card_images: list[bytes] = field(default_factory=list)
     max_card_id: int = 0
+    armed_hand_index: int | None = None
+    status_snapshots: dict[int, tuple[int, int, int, int]] = field(default_factory=dict)
     registry: CardRegistry = field(default_factory=lambda: DEFAULT_REGISTRY)
     combat: CombatEngine = field(init=False)
 

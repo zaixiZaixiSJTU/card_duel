@@ -216,7 +216,13 @@ def damage_creature(
     zone.remove(creature)
     if not threat and state_has_physical_creature(context.state, player_id):
         _remove_physical_or_queue(context.state, player_id, card_id)
-    on_creature_death(context.state, player_id, creature, context.announce)
+    on_creature_death(
+        context.state,
+        player_id,
+        creature,
+        context.announce,
+        private_announce=context.private_announce,
+    )
     return True
 
 
@@ -239,6 +245,7 @@ def on_creature_death(
     announce,
     *,
     cause: str = "被击杀",
+    private_announce=None,
 ) -> None:
     card_id = creature.card_id
     statuses = state.players[player_id].statuses
@@ -257,6 +264,9 @@ def on_creature_death(
         else:
             statuses.pending_hand_additions.append(item)
         announce("拾荒者掉落了携带的物品")
+        (private_announce or announce)(
+            f"获得物品：{SLUGCAT_SPECS_BY_ID[item].name}（仅自己可见）"
+        )
 
     if state.character_ids.get(creature.owner_id) != SLUGCAT_CHARACTER_ID:
         return
@@ -322,5 +332,6 @@ def kill_matching_creature(context, card_id: int) -> bool:
         creature,
         context.announce,
         cause="被秒杀",
+        private_announce=context.private_announce,
     )
     return True

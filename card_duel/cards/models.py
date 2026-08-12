@@ -46,6 +46,7 @@ class CardPlayContext:
     combat: CombatPort
     registry: RegistryPort
     ignore_cost: bool = False
+    private_announce: Callable[[str], None] | None = None
 
     @property
     def source(self) -> CharacterState:
@@ -69,7 +70,12 @@ class CardPlayContext:
             choices=self.choices,
             combat=self.combat,
             ignore_cost=ignore_cost,
+            private_announce=self.private_announce,
         )
+
+    def announce_private(self, message: str) -> None:
+        """Report hand-private information only to the acting endpoint."""
+        (self.private_announce or self.announce)(message)
 
 
 class CardHandler(Protocol):

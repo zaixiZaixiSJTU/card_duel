@@ -9,10 +9,14 @@ from card_duel.core.rules import draw_cards
 from card_duel.network.protocol import (
     receive_pending_chat,
     send_announcement,
+    send_card_played,
     send_chat_message,
     send_game_state,
 )
+from card_duel.ui.card_interaction import clear_armed_card, route_hand_card_event
 from card_duel.ui.choices import GuiChoiceProvider
+from card_duel.ui.deck_viewer import DECK_VIEW_KEY, open_deck_viewer
+from card_duel.ui.network_log import append_log
 from card_duel.ui.network_style import CHAT_INPUT_KEY, CHAT_SEND_KEY
 from card_duel.ui.network_view import (
     refresh_cards,
@@ -38,7 +42,14 @@ def play_active_turn(session, player_id, round_number):
     announce(f" [轮到玩家{player_id} ({character_name})]")
 
     choices = GuiChoiceProvider(session.card_images)
-    turn = TurnEngine(game_state, round_number, player_id, announce, choices=choices)
+    turn = TurnEngine(
+        game_state,
+        round_number,
+        player_id,
+        announce,
+        choices=choices,
+        private_announce=lambda message: append_log(session, message),
+    )
     turn.register_phase_handler(
         TurnPhase.TURN_START,
         lambda context: session.combat.advance_turn_effects(
@@ -46,7 +57,12 @@ def play_active_turn(session, player_id, round_number):
         ),
         priority=10,
     )
-    turn.register_phase_handler(TurnPhase.DRAW, _draw_turn_cards)
+    turn.register_phase_handler(
+        TurnPhase.DRAW,
+        lambda context: _draw_turn_cards(
+            context, local_announce=lambda message: append_log(session, message)
+        ),
+    )
     session.combat.register_turn_handlers(turn)
 
     # 回合开始时：结算持续效果与“回合开始时”能力。
@@ -71,7 +87,7 @@ def play_active_turn(session, player_id, round_number):
 
     # 回合结束时：为结束触发效果保留统一判定点。
     _enter_phase(session, turn, TurnPhase.TURN_END)
-    print(" [你的回合结束]")
+    append_log(session, " [你的回合结束]")
     refresh_cards(game_state, window, session.card_images)
     set_cards_enabled(window, False)
     # End-phase effects mutate health, agility, creatures, and inserted items.
@@ -88,9 +104,14 @@ def _enter_phase(session, turn, phase):
     return turn.enter_phase(phase)
 
 
-def _draw_turn_cards(context):
+def _draw_turn_cards(context, local_announce=None):
     if context.game_state.character_ids.get(context.player_id) == 4:
-        _draw_slugcat_cards(context.game_state, 2, 1, context.announce)
+        _draw_slugcat_cards(
+            context.game_state,
+            2,
+            1,
+            local_announce or context.announce,
+        )
     else:
         draw_cards(context.game_state, 3)
 
@@ -139,6 +160,7 @@ def _draw_slugcat_cards(game_state, skill_count, item_count, announce):
 def _run_card_play_phase(session, player_id, opponent_id, announce, choices):
     game_state = session.state
     window = session.require_window()
+    clear_armed_card(session)
     set_cards_enabled(window, True)
     while True:
         event, values = window.read(timeout=120)
@@ -147,14 +169,17 @@ def _run_card_play_phase(session, player_id, opponent_id, announce, choices):
         if event == CHAT_SEND_KEY:
             send_chat_message(session, values.get(CHAT_INPUT_KEY, ""))
             continue
+        if event == DECK_VIEW_KEY:
+            open_deck_viewer(session)
+            continue
 
         receive_pending_chat(session)
         if event == "-btn1-":
             return True
-        if not isinstance(event, str) or not event.startswith("-BTN"):
+        routed = route_hand_card_event(session, event)
+        if routed is None or routed[0] != "confirmed":
             continue
-
-        hand_index = int(event.removeprefix("-BTN").removesuffix("-"))
+        hand_index = routed[1]
         if hand_index >= len(game_state.hand_cards):
             continue
         card_id = game_state.hand_cards[hand_index]
@@ -169,7 +194,10 @@ def _run_card_play_phase(session, player_id, opponent_id, announce, choices):
             announce=announce,
             choices=choices,
             combat=session.combat,
+            private_announce=lambda message: append_log(session, message),
         ):
+            send_card_played(session, player_id, character_id, card_id)
+            clear_armed_card(session)
             if not definition.exhausted:
                 _return_card_after_use(game_state, player_id, card_id)
             _remove_played_card(game_state, hand_index, card_id)
@@ -204,6 +232,7 @@ def _return_card_after_use(game_state, player_id, card_id):
 def _run_discard_phase(session, announce):
     game_state = session.state
     window = session.require_window()
+    clear_armed_card(session)
     announce(" ---------------------------------------------------- ")
     announce(" [弃牌阶段]")
 
@@ -218,6 +247,9 @@ def _run_discard_phase(session, announce):
         if event == CHAT_SEND_KEY:
             send_chat_message(session, values.get(CHAT_INPUT_KEY, ""))
             continue
+        if event == DECK_VIEW_KEY:
+            open_deck_viewer(session)
+            continue
 
         receive_pending_chat(session)
         if (
@@ -225,16 +257,17 @@ def _run_discard_phase(session, announce):
             and _effective_hand_size(game_state, player_id) <= HAND_LIMIT
         ):
             return True
-        if not isinstance(event, str) or not event.startswith("-BTN"):
+        routed = route_hand_card_event(session, event)
+        if routed is None or routed[0] != "confirmed":
             continue
-
-        hand_index = int(event.removeprefix("-BTN").removesuffix("-"))
+        hand_index = routed[1]
         if hand_index >= len(game_state.hand_cards):
             continue
         card_id = game_state.hand_cards[hand_index]
         if not _can_discard(game_state, player_id, card_id):
             announce("生物牌和插入物不可弃置")
             continue
+        clear_armed_card(session)
         game_state.hand_cards.pop(hand_index)
         _return_card_after_use(game_state, player_id, card_id)
         refresh_cards(game_state, window, session.card_images)

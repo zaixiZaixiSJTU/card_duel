@@ -7,6 +7,7 @@ import FreeSimpleGUI as sg
 from card_duel.core.resources import load_character_images
 from card_duel.core.rules import build_shuffled_deck
 from card_duel.network.transport import receive_json, send_json
+from card_duel.ui.card_interaction import bind_hand_card_events
 from card_duel.ui.network import create_main_layout
 from card_duel.ui.network_dialogs import character_select_dialog, waiting_dialog
 from card_duel.ui.network_style import WINDOW_SIZE, WINDOW_TITLE
@@ -62,5 +63,6 @@ def prepare_game_window(session) -> bool:
         keep_on_top=True,
         resizable=True,
     )
+    bind_hand_card_events(session.require_window())
     refresh_cards(state, session.require_window(), session.card_images)
     return True

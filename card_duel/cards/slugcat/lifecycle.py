@@ -202,12 +202,24 @@ def _resolve_creatures(context, combat) -> None:
     if any(item.card_id in LIZARD_IDS for item in all_creatures):
         for noodle in [item for item in statuses.hand_creatures if item.card_id == 16]:
             remove_hand_creature(state, player_id, 16)
-            on_creature_death(state, player_id, noodle, context.announce)
+            on_creature_death(
+                state,
+                player_id,
+                noodle,
+                context.announce,
+                private_announce=context.private_announce,
+            )
             context.announce("蜥蜴吃掉了小面条，引来面条蝇")
 
     for noodle in [item for item in statuses.hand_creatures if item.card_id == 16]:
         remove_hand_creature(state, player_id, 16)
-        on_creature_death(state, player_id, noodle, context.announce)
+        on_creature_death(
+            state,
+            player_id,
+            noodle,
+            context.announce,
+            private_announce=context.private_announce,
+        )
 
     if context.choices is not None:
         for _creature in [

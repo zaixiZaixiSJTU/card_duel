@@ -476,6 +476,9 @@ def white_pearl(context):
         add_card_to_hand(context.state, item)
         context.source.statuses.last_dead_creature_health += 5
         context.announce("白珍珠换来了拾荒者携带的物品")
+        context.announce_private(
+            f"获得物品：{SLUGCAT_SPECS_BY_ID[item].name}（仅自己可见）"
+        )
     else:
         context.source.statuses.scavenger_attraction = True
         context.announce("白珍珠正在吸引拾荒者")

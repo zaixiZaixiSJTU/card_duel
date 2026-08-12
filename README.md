@@ -92,6 +92,9 @@ card_duel/
     ├── network.py             # 联网主布局
     ├── network_style.py       # 联网视觉常量和主题
     ├── network_view.py        # 状态到控件的单向渲染
+    ├── network_log.py         # 彩色战斗/聊天日志
+    ├── card_interaction.py    # 手牌确认与右键预览
+    ├── deck_viewer.py         # 牌堆、见闻池与生物池查看器
     ├── network_dialogs.py     # 选角和等待对话框
     └── choices.py             # ChoiceProvider 的 GUI 实现
 ```
@@ -192,13 +195,18 @@ turn.register_phase_handler(
 ```json
 {"type": "chat", "message": "..."}
 {"type": "announcement", "message": "..."}
+{"type": "card_played", "player_id": 1, "character_id": 4, "card_id": 6}
 {"type": "state", "players": {}, "defences": {}}
 {"type": "turn_change"}
 ```
 
 每个 JSON 负载前有四字节大端长度。状态一次发送，不再使用字符串标记和多轮 `pass` ACK，连续或拆分的 TCP 数据都能正确恢复消息边界。
 
-当前协议版本为 2。生物、插入物和角色数据中的嵌套 dataclass 会按类型恢复；异步加入手牌、移除手牌、回归牌堆以及炸矛弃牌均在接收状态时立即处理。协议版本不一致时双方会拒绝进入对局。
+当前协议版本为 3。生物、插入物和角色数据中的嵌套 dataclass 会按类型恢复；异步加入手牌、移除手牌、回归牌堆以及炸矛弃牌均在接收状态时立即处理。`card_played` 只同步已公开打出的卡，不包含手牌信息。协议版本不一致时双方会拒绝进入对局。
+
+## 贡献与功能沿革
+
+@CuiGer 在提交 `e6ba8b7`、`7f13456` 中完成了蛞蝓猫规则修复、生物与插入物系统、卡牌交互和联机同步改进。当前模块化实现以这两个提交为功能基线，并保留其 Git 作者记录；详细映射见 [docs/CUIGER_INTEGRATION.md](docs/CUIGER_INTEGRATION.md)。
 
 ## 新增角色
 

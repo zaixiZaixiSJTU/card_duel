@@ -107,6 +107,7 @@ class CardRegistry:
         combat,
         choices: ChoiceProvider | None = None,
         ignore_cost: bool = False,
+        private_announce=None,
     ) -> bool | int:
         context = CardPlayContext(
             state=state,
@@ -117,6 +118,7 @@ class CardRegistry:
             combat=combat,
             registry=self,
             ignore_cost=ignore_cost,
+            private_announce=private_announce,
         )
         return self.get_card(character_id, card_id).handler(context)
 

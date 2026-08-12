@@ -192,10 +192,15 @@ SLUGCAT_CARD_SPECS = (
 
 SLUGCAT_SPECS_BY_ID = {spec.card_id: spec for spec in SLUGCAT_CARD_SPECS}
 
-# Direct draws contain skills only. Other card types enter through discoveries
-# and card effects as specified by the workbook.
+# The initial deck contains every authored source card except creatures,
+# discoveries, and temporary inserted cards.  Creatures/discoveries have their
+# own pools and must never be reached by an ordinary draw.
 SLUGCAT_INITIAL_DECK_COUNTS = {
-    card_id: SLUGCAT_SPECS_BY_ID[card_id].source_count for card_id in range(6, 16)
+    spec.card_id: spec.source_count
+    for spec in SLUGCAT_CARD_SPECS
+    if spec.source_count > 0
+    and not 16 <= spec.card_id <= 35
+    and spec.card_id not in (49, 50)
 }
 
 SLUGCAT_CREATURE_IDS = tuple(range(16, 27))
