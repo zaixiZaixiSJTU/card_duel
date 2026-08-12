@@ -56,6 +56,8 @@ def _receive_bytes_with_ui(
             if event == DECK_VIEW_KEY:
                 open_deck_viewer(session)
                 continue
+            if not select.select([connection], [], [], 0)[0]:
+                continue
             try:
                 return connection.recv(byte_count)
             except TimeoutError:
@@ -263,6 +265,7 @@ def _coerce_value(annotation, value):
 
 def _apply_local_pending_actions(session) -> None:
     state = session.state
+    hand_before_actions = list(state.hand_cards)
     player_id = state.local_player_id
     player = state.players[player_id]
     statuses = player.statuses
@@ -291,16 +294,22 @@ def _apply_local_pending_actions(session) -> None:
 
     if statuses.pending_discards:
         from card_duel.cards.slugcat.lifecycle import resolve_pending_discards
+        from card_duel.ui.card_animations import animate_card_action
 
         resolve_pending_discards(
             state,
             player_id,
             announce=lambda message: append_log(session, message),
+            on_discard=lambda index, _card_id: animate_card_action(
+                session, index, "discard"
+            ),
         )
 
+    from card_duel.ui.card_animations import animate_hand_additions
     from card_duel.ui.network_view import refresh_cards
 
     refresh_cards(state, _session_window(session), session.card_images)
+    animate_hand_additions(session, hand_before_actions)
 
 
 def _clear_transient_queues(state) -> None:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "card-duel"
-version = "0.4.1"
+version = "0.4.2"
 description = "A two-player card duel game over TCP"
 readme = "README.md"
 requires-python = ">=3.10"

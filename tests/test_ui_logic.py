@@ -1,15 +1,25 @@
 """Headless checks for the interaction features retained from @CuiGer's work."""
 
+import base64
+import io
 import unittest
 from collections import defaultdict
 from types import SimpleNamespace
+from unittest.mock import patch
+
+from PIL import Image
 
 from card_duel.application.combat import CombatEngine
 from card_duel.cards.catalog import DEFAULT_REGISTRY
 from card_duel.cards.slugcat.state import slugcat_data
 from card_duel.core.models import GameState
 from card_duel.ui.auxiliary_windows import read_primary_window
+from card_duel.ui.card_animations import (
+    animate_hand_additions,
+    enlarged_card_image,
+)
 from card_duel.ui.card_interaction import (
+    _set_card_spacing,
     parse_hand_card_event,
     poll_card_preview,
     route_hand_card_event,
@@ -56,6 +66,22 @@ class _PollingWindow:
 
     def close(self):
         self.closed = True
+
+
+class _ManagedWidget:
+    def __init__(self, manager):
+        self.manager = manager
+        self.pack_options = []
+        self.grid_options = []
+
+    def winfo_manager(self):
+        return self.manager
+
+    def pack_configure(self, **kwargs):
+        self.pack_options.append(kwargs)
+
+    def grid_configure(self, **kwargs):
+        self.grid_options.append(kwargs)
 
 
 class UiLogicTests(unittest.TestCase):
@@ -147,6 +173,35 @@ class UiLogicTests(unittest.TestCase):
         self.assertEqual(primary.timeouts, [37])
         self.assertEqual(viewer.timeouts, [0])
         self.assertEqual(preview.timeouts, [0])
+
+    def test_hand_addition_animation_handles_duplicate_card_ids(self):
+        session = SimpleNamespace(
+            state=SimpleNamespace(hand_cards=[6, 6, 8, 6]),
+        )
+        with patch("card_duel.ui.card_animations.animate_draw_cards") as animate_draw:
+            added = animate_hand_additions(session, [6, 8])
+
+        self.assertEqual(added, 2)
+        animate_draw.assert_called_once_with(session, [1, 3])
+
+    def test_right_click_preview_is_rendered_at_double_card_size(self):
+        image = Image.new("RGB", (160, 240), "#FFFFFF")
+        source = io.BytesIO()
+        image.save(source, format="PNG")
+
+        enlarged = enlarged_card_image(base64.b64encode(source.getvalue()))
+
+        with Image.open(io.BytesIO(base64.b64decode(enlarged))) as result:
+            self.assertEqual(result.size, (320, 480))
+
+    def test_selection_lift_respects_scrollable_pack_layout(self):
+        widget = _ManagedWidget("pack")
+
+        _set_card_spacing(widget, True)
+        _set_card_spacing(widget, False)
+
+        self.assertEqual(widget.pack_options, [{"pady": 7}, {"pady": 0}])
+        self.assertFalse(widget.grid_options)
 
 
 if __name__ == "__main__":

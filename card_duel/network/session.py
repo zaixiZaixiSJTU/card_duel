@@ -24,6 +24,8 @@ class GameSession:
     armed_hand_index: int | None = None
     deck_viewer_window: Any | None = None
     preview_window: Any | None = None
+    animation_windows: list[Any] = field(default_factory=list)
+    animation_callbacks: list[tuple[Any, str]] = field(default_factory=list)
     status_snapshots: dict[int, tuple[int, int, int, int]] = field(default_factory=dict)
     registry: CardRegistry = field(default_factory=lambda: DEFAULT_REGISTRY)
     combat: CombatEngine = field(init=False)

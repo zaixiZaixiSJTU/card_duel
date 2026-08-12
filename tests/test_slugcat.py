@@ -111,6 +111,7 @@ class SlugcatTests(unittest.TestCase):
         self.game.hand_cards[:] = [6, 7]
         slugcat_data(self.game.players[1]).agility = 5
         self.game.players[1].statuses.pending_discards = 1
+        discard_events = []
         turn = TurnEngine(self.game, 1, 1, self.messages.append)
         self.combat.register_turn_handlers(turn)
 
@@ -118,9 +119,16 @@ class SlugcatTests(unittest.TestCase):
 
         self.assertEqual(slugcat_data(self.game.players[1]).agility, 0)
         self.assertEqual(self.game.players[1].statuses.pending_discards, 1)
-        resolve_pending_discards(self.game, 1, self.messages.append)
+        resolve_pending_discards(
+            self.game,
+            1,
+            self.messages.append,
+            on_discard=lambda index, card_id: discard_events.append((index, card_id)),
+        )
         self.assertEqual(self.game.players[1].statuses.pending_discards, 0)
         self.assertEqual(len(self.game.hand_cards), 1)
+        self.assertEqual(len(discard_events), 1)
+        self.assertIn(discard_events[0][1], (6, 7))
         self.assertTrue(any("随机弃掉" in message for message in self.messages))
 
     def test_missing_art_pack_uses_registered_placeholder_cards(self):

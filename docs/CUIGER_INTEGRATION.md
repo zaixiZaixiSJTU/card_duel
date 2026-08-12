@@ -23,6 +23,7 @@
 | 左键两次确认、右键预览 | `ui/card_interaction.py` |
 | 分类牌堆、见闻池、已解锁生物 | `ui/deck_viewer.py` |
 | 查看器/预览不阻塞联机收发 | `ui/auxiliary_windows.py` |
+| 抽牌、出牌、弃牌和选择反馈动画 | `ui/card_animations.py`、`ui/card_interaction.py` |
 | 战斗/聊天彩色日志 | `ui/network_log.py` |
 | 动态费用、生物血量、红/金边框、最近出牌 | `ui/network_view.py` |
 | 18 个手牌槽、每行 6 张、竖向滚动 | `ui/network.py` |

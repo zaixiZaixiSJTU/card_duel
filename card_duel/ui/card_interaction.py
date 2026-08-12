@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import FreeSimpleGUI as sg
 
+from card_duel.ui.card_animations import enlarged_card_image
 from card_duel.ui.network_style import (
     COLOR_BLUE,
+    COLOR_INK,
+    COLOR_MUTED,
     COLOR_PAPER,
+    COLOR_PAPER_DARK,
+    FONT_BODY,
+    FONT_BODY_BOLD,
     MAX_HAND_BUTTONS,
 )
 
@@ -17,7 +23,12 @@ def bind_hand_card_events(window) -> None:
     """Make right-click events distinguishable from ordinary card clicks."""
     for index in range(MAX_HAND_BUTTONS):
         try:
-            window[f"-BTN{index}-"].bind("<Button-3>", RIGHT_CLICK_SUFFIX)
+            element = window[f"-BTN{index}-"]
+            element.bind("<Button-3>", RIGHT_CLICK_SUFFIX)
+            widget = element.Widget
+            widget.configure(cursor="hand2", relief="flat")
+            widget.bind("<Enter>", _hover_enter, add="+")
+            widget.bind("<Leave>", _hover_leave, add="+")
         except (KeyError, AttributeError, RuntimeError):
             continue
 
@@ -47,11 +58,13 @@ def route_hand_card_event(session, event) -> tuple[str, int] | None:
     if session.armed_hand_index == index:
         _mark_armed(session, index, False)
         session.armed_hand_index = None
+        _set_card_hint(session, "卡牌已确认，正在结算……")
         return "confirmed", index
     if session.armed_hand_index is not None:
         _mark_armed(session, session.armed_hand_index, False)
     session.armed_hand_index = index
     _mark_armed(session, index, True)
+    _set_card_hint(session, "卡牌已抬起 · 再次左键确认 · 右键放大预览")
     return "armed", index
 
 
@@ -59,6 +72,7 @@ def clear_armed_card(session) -> None:
     if session.armed_hand_index is not None:
         _mark_armed(session, session.armed_hand_index, False)
     session.armed_hand_index = None
+    _set_card_hint(session, "左键一次选中，再次确认 · 右键放大预览")
 
 
 def preview_hand_card(session, hand_index: int) -> None:
@@ -72,19 +86,70 @@ def open_card_preview(session, image_data: bytes, parent=None) -> None:
     window = sg.Window(
         "卡牌预览",
         [
-            [sg.Image(data=image_data, background_color=COLOR_PAPER)],
-            [sg.Button("关闭", key="-CLOSE-", bind_return_key=True)],
+            [
+                sg.Text(
+                    "卡牌详情",
+                    font=FONT_BODY_BOLD,
+                    text_color=COLOR_PAPER,
+                    background_color=COLOR_INK,
+                    expand_x=True,
+                    justification="center",
+                )
+            ],
+            [
+                sg.Image(
+                    data=enlarged_card_image(image_data),
+                    key="-PREVIEW-CARD-",
+                    enable_events=True,
+                    background_color=COLOR_INK,
+                    pad=(18, 12),
+                )
+            ],
+            [
+                sg.Text(
+                    "右键预览 · 不会暂停联机对局",
+                    font=FONT_BODY,
+                    text_color=COLOR_MUTED,
+                    background_color=COLOR_INK,
+                    expand_x=True,
+                    justification="center",
+                )
+            ],
+            [
+                sg.Button(
+                    "关闭",
+                    key="-CLOSE-",
+                    bind_return_key=True,
+                    button_color=(COLOR_INK, COLOR_PAPER_DARK),
+                    size=(12, 1),
+                )
+            ],
         ],
         finalize=True,
         keep_on_top=True,
-        background_color=COLOR_PAPER,
+        no_titlebar=True,
+        background_color=COLOR_INK,
+        element_justification="center",
+        margins=(12, 12),
     )
+    window.bind("<Escape>", "-CLOSE-")
+    window.bind("<Button-3>", "-CLOSE-")
     session.preview_window = window
     try:
         parent = parent or session.require_window()
         window.TKroot.transient(parent.TKroot)
         window.TKroot.lift()
         window.TKroot.focus_force()
+        window.TKroot.update_idletasks()
+        x = (
+            parent.TKroot.winfo_rootx()
+            + (parent.TKroot.winfo_width() - window.TKroot.winfo_width()) // 2
+        )
+        y = (
+            parent.TKroot.winfo_rooty()
+            + (parent.TKroot.winfo_height() - window.TKroot.winfo_height()) // 2
+        )
+        window.move(max(0, x), max(0, y))
     except Exception:
         pass
 
@@ -99,7 +164,7 @@ def poll_card_preview(session) -> None:
     except Exception:
         close_card_preview(session)
         return
-    if event in (sg.WIN_CLOSED, "-CLOSE-"):
+    if event in (sg.WIN_CLOSED, "-CLOSE-", "-PREVIEW-CARD-"):
         close_card_preview(session)
 
 
@@ -123,13 +188,60 @@ def _mark_armed(session, hand_index: int, armed: bool) -> None:
             session.require_window(),
             session.card_images,
         )
+        try:
+            widget = session.require_window()[f"-BTN{hand_index}-"].Widget
+            widget._card_armed = False
+            _set_card_spacing(widget, False)
+            widget.configure(relief="flat", borderwidth=1)
+        except Exception:
+            pass
         return
     try:
         widget = session.require_window()[f"-BTN{hand_index}-"].Widget
+        widget._card_armed = True
+        _set_card_spacing(widget, True)
         widget.configure(
             highlightthickness=6,
             highlightbackground=COLOR_BLUE,
             highlightcolor=COLOR_BLUE,
+            relief="raised",
+            borderwidth=4,
         )
-    except (KeyError, AttributeError, RuntimeError):
+    except Exception:
         return
+
+
+def _hover_enter(event) -> None:
+    widget = event.widget
+    if getattr(widget, "_card_armed", False):
+        return
+    try:
+        widget.configure(relief="raised", borderwidth=3)
+    except Exception:
+        return
+
+
+def _hover_leave(event) -> None:
+    widget = event.widget
+    if getattr(widget, "_card_armed", False):
+        return
+    try:
+        widget.configure(relief="flat", borderwidth=1)
+    except Exception:
+        return
+
+
+def _set_card_hint(session, text: str) -> None:
+    try:
+        session.require_window()["-CARD-HINT-"].update(text)
+    except Exception:
+        return
+
+
+def _set_card_spacing(widget, armed: bool) -> None:
+    """Lift a card using the geometry manager chosen by FreeSimpleGUI."""
+    manager = widget.winfo_manager()
+    if manager == "pack":
+        widget.pack_configure(pady=7 if armed else 0)
+    elif manager == "grid":
+        widget.grid_configure(pady=(0, 14) if armed else (0, 0))
