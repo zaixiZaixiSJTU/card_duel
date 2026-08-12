@@ -110,8 +110,10 @@ def open_deck_viewer(session) -> None:
         modal=True,
         finalize=True,
         resizable=True,
+        keep_on_top=True,
         background_color=COLOR_PAPER,
     )
+    _place_above(window, session.require_window())
     for card_id in {card_id for counts in groups.values() for card_id in counts}:
         window[f"-DECK-CARD-{card_id}-"].bind("<Button-3>", " RIGHT")
     try:
@@ -122,19 +124,21 @@ def open_deck_viewer(session) -> None:
             if isinstance(event, str) and event.startswith("-DECK-CARD-"):
                 key = event.removesuffix(" RIGHT")
                 card_id = int(key.removeprefix("-DECK-CARD-").removesuffix("-"))
-                _preview_static_card(session.card_images[card_id])
+                _preview_static_card(session.card_images[card_id], window)
     finally:
         window.close()
 
 
-def _preview_static_card(image_data: bytes) -> None:
+def _preview_static_card(image_data: bytes, parent) -> None:
     window = sg.Window(
         "卡牌预览",
         [[sg.Image(data=image_data)], [sg.Button("关闭", key="-CLOSE-")]],
         modal=True,
         finalize=True,
+        keep_on_top=True,
         background_color=COLOR_PAPER,
     )
+    _place_above(window, parent)
     try:
         while True:
             event, _values = window.read()
@@ -142,3 +146,13 @@ def _preview_static_card(image_data: bytes) -> None:
                 return
     finally:
         window.close()
+
+
+def _place_above(window, parent) -> None:
+    """Attach a temporary window to its parent and raise it on Windows/Tk."""
+    try:
+        window.TKroot.transient(parent.TKroot)
+        window.TKroot.lift()
+        window.TKroot.focus_force()
+    except Exception:
+        return

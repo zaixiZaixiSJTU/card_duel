@@ -72,8 +72,15 @@ def preview_hand_card(session, hand_index: int) -> None:
         ],
         modal=True,
         finalize=True,
+        keep_on_top=True,
         background_color=COLOR_PAPER,
     )
+    try:
+        window.TKroot.transient(session.require_window().TKroot)
+        window.TKroot.lift()
+        window.TKroot.focus_force()
+    except Exception:
+        pass
     try:
         while True:
             event, _values = window.read()

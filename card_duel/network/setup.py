@@ -60,7 +60,6 @@ def prepare_game_window(session) -> bool:
         size=WINDOW_SIZE,
         font=("Microsoft YaHei", 10),
         finalize=True,
-        keep_on_top=True,
         resizable=True,
     )
     bind_hand_card_events(session.require_window())
