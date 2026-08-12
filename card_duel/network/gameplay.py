@@ -13,6 +13,7 @@ from card_duel.network.protocol import (
     send_chat_message,
     send_game_state,
 )
+from card_duel.ui.auxiliary_windows import read_primary_window
 from card_duel.ui.card_interaction import clear_armed_card, route_hand_card_event
 from card_duel.ui.choices import GuiChoiceProvider
 from card_duel.ui.deck_viewer import DECK_VIEW_KEY, open_deck_viewer
@@ -163,7 +164,7 @@ def _run_card_play_phase(session, player_id, opponent_id, announce, choices):
     clear_armed_card(session)
     set_cards_enabled(window, True)
     while True:
-        event, values = window.read(timeout=120)
+        event, values = read_primary_window(session)
         if event == sg.WIN_CLOSED:
             return False
         if event == CHAT_SEND_KEY:
@@ -241,7 +242,7 @@ def _run_discard_phase(session, announce):
     announce(f"需要弃牌:{excess_cards}" if excess_cards else "无需弃牌")
 
     while game_state.hand_size > 0:
-        event, values = window.read(timeout=120)
+        event, values = read_primary_window(session)
         if event == sg.WIN_CLOSED:
             return False
         if event == CHAT_SEND_KEY:

@@ -8,11 +8,13 @@ from card_duel.application.combat import CombatEngine
 from card_duel.cards.catalog import DEFAULT_REGISTRY
 from card_duel.cards.slugcat.state import slugcat_data
 from card_duel.core.models import GameState
+from card_duel.ui.auxiliary_windows import read_primary_window
 from card_duel.ui.card_interaction import (
     parse_hand_card_event,
+    poll_card_preview,
     route_hand_card_event,
 )
-from card_duel.ui.deck_viewer import grouped_deck_cards
+from card_duel.ui.deck_viewer import grouped_deck_cards, poll_deck_viewer
 from card_duel.ui.network_log import classify_log_color
 from card_duel.ui.network_style import COLOR_BLUE, COLOR_GREEN, COLOR_RED
 
@@ -40,6 +42,20 @@ class _Window:
 
     def refresh(self):
         return None
+
+
+class _PollingWindow:
+    def __init__(self, event="__TIMEOUT__"):
+        self.event = event
+        self.timeouts = []
+        self.closed = False
+
+    def read(self, timeout=None):
+        self.timeouts.append(timeout)
+        return self.event, {}
+
+    def close(self):
+        self.closed = True
 
 
 class UiLogicTests(unittest.TestCase):
@@ -85,6 +101,52 @@ class UiLogicTests(unittest.TestCase):
         self.assertEqual(classify_log_color("[我] 你好"), COLOR_BLUE)
         self.assertEqual(classify_log_color("玩家2失去3点生命"), COLOR_RED)
         self.assertEqual(classify_log_color("抽牌：翻滚"), COLOR_GREEN)
+
+    def test_auxiliary_windows_are_polled_without_blocking(self):
+        viewer = _PollingWindow()
+        preview = _PollingWindow()
+        session = SimpleNamespace(
+            deck_viewer_window=viewer,
+            preview_window=preview,
+        )
+
+        poll_deck_viewer(session)
+        poll_card_preview(session)
+
+        self.assertEqual(viewer.timeouts, [0])
+        self.assertEqual(preview.timeouts, [0])
+        self.assertIs(session.deck_viewer_window, viewer)
+        self.assertIs(session.preview_window, preview)
+
+    def test_auxiliary_window_close_does_not_own_a_read_loop(self):
+        viewer = _PollingWindow(event=None)
+        session = SimpleNamespace(
+            deck_viewer_window=viewer,
+            preview_window=None,
+        )
+
+        poll_deck_viewer(session)
+
+        self.assertEqual(viewer.timeouts, [0])
+        self.assertTrue(viewer.closed)
+        self.assertIsNone(session.deck_viewer_window)
+
+    def test_primary_read_always_gives_auxiliary_windows_a_time_slice(self):
+        primary = _PollingWindow(event="main-event")
+        viewer = _PollingWindow()
+        preview = _PollingWindow()
+        session = SimpleNamespace(
+            require_window=lambda: primary,
+            deck_viewer_window=viewer,
+            preview_window=preview,
+        )
+
+        result = read_primary_window(session, timeout=37)
+
+        self.assertEqual(result, ("main-event", {}))
+        self.assertEqual(primary.timeouts, [37])
+        self.assertEqual(viewer.timeouts, [0])
+        self.assertEqual(preview.timeouts, [0])
 
 
 if __name__ == "__main__":

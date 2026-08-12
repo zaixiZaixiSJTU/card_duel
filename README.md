@@ -95,6 +95,7 @@ card_duel/
     ├── network_log.py         # 彩色战斗/聊天日志
     ├── card_interaction.py    # 手牌确认与右键预览
     ├── deck_viewer.py         # 牌堆、见闻池与生物池查看器
+    ├── auxiliary_windows.py   # 非阻塞辅助窗口轮询与清理
     ├── network_dialogs.py     # 选角和等待对话框
     └── choices.py             # ChoiceProvider 的 GUI 实现
 ```

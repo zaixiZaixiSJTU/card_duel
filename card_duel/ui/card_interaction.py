@@ -63,31 +63,55 @@ def clear_armed_card(session) -> None:
 
 def preview_hand_card(session, hand_index: int) -> None:
     card_id = session.state.hand_cards[hand_index]
-    image = session.card_images[card_id]
+    open_card_preview(session, session.card_images[card_id])
+
+
+def open_card_preview(session, image_data: bytes, parent=None) -> None:
+    """Create a preview and return immediately; the main loop drives it."""
+    close_card_preview(session)
     window = sg.Window(
         "卡牌预览",
         [
-            [sg.Image(data=image, background_color=COLOR_PAPER)],
+            [sg.Image(data=image_data, background_color=COLOR_PAPER)],
             [sg.Button("关闭", key="-CLOSE-", bind_return_key=True)],
         ],
-        modal=True,
         finalize=True,
         keep_on_top=True,
         background_color=COLOR_PAPER,
     )
+    session.preview_window = window
     try:
-        window.TKroot.transient(session.require_window().TKroot)
+        parent = parent or session.require_window()
+        window.TKroot.transient(parent.TKroot)
         window.TKroot.lift()
         window.TKroot.focus_force()
     except Exception:
         pass
+
+
+def poll_card_preview(session) -> None:
+    """Process at most one preview event without delaying network I/O."""
+    window = getattr(session, "preview_window", None)
+    if window is None:
+        return
     try:
-        while True:
-            event, _values = window.read()
-            if event in (sg.WIN_CLOSED, "-CLOSE-"):
-                return
-    finally:
-        window.close()
+        event, _values = window.read(timeout=0)
+    except Exception:
+        close_card_preview(session)
+        return
+    if event in (sg.WIN_CLOSED, "-CLOSE-"):
+        close_card_preview(session)
+
+
+def close_card_preview(session) -> None:
+    window = getattr(session, "preview_window", None)
+    if hasattr(session, "preview_window"):
+        session.preview_window = None
+    if window is not None:
+        try:
+            window.close()
+        except Exception:
+            return
 
 
 def _mark_armed(session, hand_index: int, armed: bool) -> None:

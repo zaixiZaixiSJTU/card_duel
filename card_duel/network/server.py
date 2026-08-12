@@ -19,6 +19,7 @@ from card_duel.network.protocol import (
 from card_duel.network.session import GameSession
 from card_duel.network.setup import exchange_character_choices, prepare_game_window
 from card_duel.network.transport import send_json
+from card_duel.ui.auxiliary_windows import close_auxiliary_windows
 from card_duel.ui.network_dialogs import waiting_dialog
 from card_duel.ui.network_style import init_theme
 from card_duel.ui.network_view import refresh_cards, set_phase
@@ -102,6 +103,7 @@ def main():
     except (ConnectionError, OSError, ValueError) as error:
         sg.popup_error(f"联网对战中断: {error}", keep_on_top=True)
     finally:
+        close_auxiliary_windows(session)
         if session.window is not None:
             session.window.close()
         connection.close()

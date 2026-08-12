@@ -12,6 +12,7 @@ import FreeSimpleGUI as sg
 
 from card_duel.core.models import DefenceEffect
 from card_duel.network.transport import receive_json, send_json
+from card_duel.ui.auxiliary_windows import read_primary_window
 from card_duel.ui.deck_viewer import DECK_VIEW_KEY, open_deck_viewer
 from card_duel.ui.network_log import append_log
 from card_duel.ui.network_style import CHAT_INPUT_KEY, CHAT_SEND_KEY
@@ -42,12 +43,11 @@ def _receive_bytes_with_ui(
 ) -> bytes:
     """Receive an exact-frame chunk while continuing to pump GUI events."""
     connection = session.connection
-    window = _session_window(session)
     original_timeout = connection.gettimeout()
     connection.settimeout(timeout)
     try:
         while True:
-            event, values = window.read(timeout=120)
+            event, values = read_primary_window(session)
             if event == sg.WIN_CLOSED:
                 return b""
             if allow_chat and event == CHAT_SEND_KEY:
