@@ -13,7 +13,7 @@ from card_duel.application.combat import CombatEngine
 from card_duel.cards.catalog import DEFAULT_REGISTRY
 from card_duel.cards.slugcat.state import slugcat_data
 from card_duel.core.models import GameState
-from card_duel.ui.auxiliary_windows import read_primary_window
+from card_duel.ui.auxiliary_windows import DECK_EVENT_HANDLED, read_primary_window
 from card_duel.ui.card_animations import (
     animate_hand_additions,
     enlarged_card_image,
@@ -21,10 +21,14 @@ from card_duel.ui.card_animations import (
 from card_duel.ui.card_interaction import (
     _set_card_spacing,
     parse_hand_card_event,
-    poll_card_preview,
     route_hand_card_event,
 )
-from card_duel.ui.deck_viewer import grouped_deck_cards, poll_deck_viewer
+from card_duel.ui.deck_viewer import (
+    DECK_NEXT_KEY,
+    DECK_PREVIOUS_KEY,
+    grouped_deck_cards,
+    handle_deck_viewer_event,
+)
 from card_duel.ui.network_log import classify_log_color
 from card_duel.ui.network_style import COLOR_BLUE, COLOR_GREEN, COLOR_RED
 
@@ -128,42 +132,33 @@ class UiLogicTests(unittest.TestCase):
         self.assertEqual(classify_log_color("玩家2失去3点生命"), COLOR_RED)
         self.assertEqual(classify_log_color("抽牌：翻滚"), COLOR_GREEN)
 
-    def test_auxiliary_windows_are_polled_without_blocking(self):
-        viewer = _PollingWindow()
-        preview = _PollingWindow()
+    def test_deck_card_preview_requires_right_click(self):
         session = SimpleNamespace(
-            deck_viewer_window=viewer,
-            preview_window=preview,
+            deck_viewer_card_ids=[6],
+            card_images=[b""] * 51,
         )
+        with patch("card_duel.ui.deck_viewer.open_card_preview") as preview:
+            self.assertTrue(handle_deck_viewer_event(session, "-DECK-CARD-0-"))
+            preview.assert_not_called()
 
-        poll_deck_viewer(session)
-        poll_card_preview(session)
+            self.assertTrue(handle_deck_viewer_event(session, "-DECK-CARD-0- RIGHT"))
+            preview.assert_called_once_with(session, session.card_images[6])
 
-        self.assertEqual(viewer.timeouts, [0])
-        self.assertEqual(preview.timeouts, [0])
-        self.assertIs(session.deck_viewer_window, viewer)
-        self.assertIs(session.preview_window, preview)
-
-    def test_auxiliary_window_close_does_not_own_a_read_loop(self):
-        viewer = _PollingWindow(event=None)
-        session = SimpleNamespace(
-            deck_viewer_window=viewer,
-            preview_window=None,
-        )
-
-        poll_deck_viewer(session)
-
-        self.assertEqual(viewer.timeouts, [0])
-        self.assertTrue(viewer.closed)
-        self.assertIsNone(session.deck_viewer_window)
+    def test_deck_page_events_change_page_without_a_nested_loop(self):
+        session = SimpleNamespace(deck_viewer_page=1)
+        with patch("card_duel.ui.deck_viewer.refresh_deck_viewer") as refresh:
+            self.assertTrue(handle_deck_viewer_event(session, DECK_PREVIOUS_KEY))
+            self.assertEqual(session.deck_viewer_page, 0)
+            self.assertTrue(handle_deck_viewer_event(session, DECK_NEXT_KEY))
+            self.assertEqual(session.deck_viewer_page, 1)
+            self.assertEqual(refresh.call_count, 2)
 
     def test_primary_read_always_gives_auxiliary_windows_a_time_slice(self):
         primary = _PollingWindow(event="main-event")
-        viewer = _PollingWindow()
         preview = _PollingWindow()
         session = SimpleNamespace(
             require_window=lambda: primary,
-            deck_viewer_window=viewer,
+            deck_viewer_open=False,
             preview_window=preview,
         )
 
@@ -171,8 +166,23 @@ class UiLogicTests(unittest.TestCase):
 
         self.assertEqual(result, ("main-event", {}))
         self.assertEqual(primary.timeouts, [37])
-        self.assertEqual(viewer.timeouts, [0])
         self.assertEqual(preview.timeouts, [0])
+
+    def test_deck_events_are_consumed_inside_primary_loop(self):
+        primary = _PollingWindow(event="-DECK-CARD-0-")
+        session = SimpleNamespace(
+            require_window=lambda: primary,
+            deck_viewer_open=False,
+            deck_viewer_card_ids=[6],
+            card_images=[b""] * 51,
+            preview_window=None,
+        )
+
+        self.assertEqual(
+            read_primary_window(session, timeout=10),
+            (DECK_EVENT_HANDLED, {}),
+        )
+        self.assertEqual(primary.timeouts, [10])
 
     def test_hand_addition_animation_handles_duplicate_card_ids(self):
         session = SimpleNamespace(

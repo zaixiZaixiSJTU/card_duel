@@ -2,7 +2,13 @@
 
 from card_duel.ui.card_animations import close_card_animations
 from card_duel.ui.card_interaction import close_card_preview, poll_card_preview
-from card_duel.ui.deck_viewer import close_deck_viewer, poll_deck_viewer
+from card_duel.ui.deck_viewer import (
+    close_deck_viewer,
+    handle_deck_viewer_event,
+    poll_deck_viewer,
+)
+
+DECK_EVENT_HANDLED = "-DECK-EVENT-HANDLED-"
 
 
 def poll_auxiliary_windows(session) -> None:
@@ -15,9 +21,11 @@ def read_primary_window(session, timeout=24):
     """Read the game window and keep every optional window responsive."""
     require_window = getattr(session, "require_window", None)
     window = require_window() if require_window else session.window
-    result = window.read(timeout=timeout)
+    event, values = window.read(timeout=timeout)
+    if handle_deck_viewer_event(session, event):
+        event = DECK_EVENT_HANDLED
     poll_auxiliary_windows(session)
-    return result
+    return event, values
 
 
 def close_auxiliary_windows(session) -> None:

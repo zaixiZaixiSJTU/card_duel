@@ -13,7 +13,6 @@ import FreeSimpleGUI as sg
 from card_duel.core.models import DefenceEffect
 from card_duel.network.transport import receive_json, send_json
 from card_duel.ui.auxiliary_windows import read_primary_window
-from card_duel.ui.deck_viewer import DECK_VIEW_KEY, open_deck_viewer
 from card_duel.ui.network_log import append_log
 from card_duel.ui.network_style import CHAT_INPUT_KEY, CHAT_SEND_KEY
 from card_duel.ui.network_view import refresh_status, show_played_card
@@ -52,9 +51,6 @@ def _receive_bytes_with_ui(
                 return b""
             if allow_chat and event == CHAT_SEND_KEY:
                 send_chat_message(session, values.get(CHAT_INPUT_KEY, ""))
-                continue
-            if event == DECK_VIEW_KEY:
-                open_deck_viewer(session)
                 continue
             if not select.select([connection], [], [], 0)[0]:
                 continue

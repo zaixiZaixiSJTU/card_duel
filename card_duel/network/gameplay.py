@@ -20,7 +20,6 @@ from card_duel.ui.card_animations import (
 )
 from card_duel.ui.card_interaction import clear_armed_card, route_hand_card_event
 from card_duel.ui.choices import GuiChoiceProvider
-from card_duel.ui.deck_viewer import DECK_VIEW_KEY, open_deck_viewer
 from card_duel.ui.network_log import append_log
 from card_duel.ui.network_style import CHAT_INPUT_KEY, CHAT_SEND_KEY
 from card_duel.ui.network_view import (
@@ -176,10 +175,6 @@ def _run_card_play_phase(session, player_id, opponent_id, announce, choices):
         if event == CHAT_SEND_KEY:
             send_chat_message(session, values.get(CHAT_INPUT_KEY, ""))
             continue
-        if event == DECK_VIEW_KEY:
-            open_deck_viewer(session)
-            continue
-
         receive_pending_chat(session)
         if event == "-btn1-":
             return True
@@ -259,10 +254,6 @@ def _run_discard_phase(session, announce):
         if event == CHAT_SEND_KEY:
             send_chat_message(session, values.get(CHAT_INPUT_KEY, ""))
             continue
-        if event == DECK_VIEW_KEY:
-            open_deck_viewer(session)
-            continue
-
         receive_pending_chat(session)
         if (
             event == "-btn1-"

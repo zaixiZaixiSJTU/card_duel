@@ -2,7 +2,7 @@
 
 import FreeSimpleGUI as sg
 
-from card_duel.ui.deck_viewer import DECK_VIEW_KEY
+from card_duel.ui.deck_viewer import DECK_VIEW_KEY, build_deck_viewer_panel
 from card_duel.ui.network_style import (
     CHAT_INPUT_KEY,
     CHAT_SEND_KEY,
@@ -399,15 +399,14 @@ def create_main_layout(card_images, hand_cards):
         ],
         [card_panel],
     ]
-    return [
-        [
-            sg.Column(
-                content,
-                background_color=COLOR_BACKGROUND,
-                expand_x=True,
-                expand_y=True,
-                pad=(10, 6),
-                key="-ROOT-COL-",
-            )
-        ]
-    ]
+    game_panel = sg.Column(
+        content,
+        background_color=COLOR_BACKGROUND,
+        expand_x=True,
+        expand_y=True,
+        pad=(10, 6),
+        key="-ROOT-COL-",
+    )
+    # The deck browser shares the main window, so it cannot be hidden behind it.
+    deck_panel = build_deck_viewer_panel(card_images)
+    return [[game_panel, deck_panel]]
