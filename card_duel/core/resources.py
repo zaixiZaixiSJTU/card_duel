@@ -41,21 +41,35 @@ def load_character_images(character_id: int, registry) -> tuple[list[bytes], int
     return images, maximum
 
 
-def render_card(definition, *, effective_cost=None, creature_health=None) -> bytes:
-    """Render one generated card with optional live cost and health values."""
+def render_card(
+    definition,
+    *,
+    effective_cost=None,
+    creature_health=None,
+    outline="#2E2A26",
+) -> bytes:
+    """Render one generated card with optional live cost, health, and border."""
     return _render_card_placeholder(
         definition,
         effective_cost=effective_cost,
         creature_health=creature_health,
+        outline=outline,
     )
 
 
 def _render_card_placeholder(
-    definition, *, effective_cost=None, creature_health=None
+    definition,
+    *,
+    effective_cost=None,
+    creature_health=None,
+    outline="#2E2A26",
 ) -> bytes:
     image = Image.new("RGB", IMAGE_SIZE, "#FFFDF8")
     draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((1, 1, 158, 238), radius=10, outline="#2E2A26", width=2)
+    line_width = 4 if outline != "#2E2A26" else 2
+    draw.rounded_rectangle(
+        (1, 1, 158, 238), radius=10, outline=outline, width=line_width
+    )
     if definition is None or definition.card_id == 0:
         return _encode_pil_image(image)
 

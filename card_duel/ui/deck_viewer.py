@@ -284,6 +284,8 @@ def refresh_deck_viewer(session, *, force=False) -> bool:
                     slot_element.update(visible=True)
                     _apply_slot_border(button, category, card_id)
                 else:
+                    # 隐藏槽位也占位，保证列表按全局槽位对齐。
+                    session.deck_viewer_card_ids.append(None)
                     slot_element.update(visible=False)
                     button.update(visible=False)
                     label.update(visible=False)
@@ -292,6 +294,7 @@ def refresh_deck_viewer(session, *, force=False) -> bool:
             # 隐藏未使用的分类
             header.update(visible=False)
             for _ in range(DECK_SLOTS_PER_SECTION):
+                session.deck_viewer_card_ids.append(None)
                 window[f"-DECK-SLOT-{slot}-"].update(visible=False)
                 window[f"{DECK_CARD_PREFIX}{slot}-"].update(visible=False)
                 window[f"-DECK-CARD-LABEL-{slot}-"].update(visible=False)
@@ -329,6 +332,8 @@ def handle_deck_viewer_event(session, event) -> bool:
         slot = int(key.removeprefix(DECK_CARD_PREFIX).removesuffix("-"))
         card_id = session.deck_viewer_card_ids[slot]
     except (ValueError, IndexError, AttributeError):
+        return True
+    if card_id is None:
         return True
     open_card_preview(session, session.card_images[card_id])
     return True

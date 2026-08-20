@@ -9,6 +9,7 @@ from card_duel.cards.slugcat.creatures import (
     kill_matching_creature,
     remove_all_local_hand_creatures,
     remove_hand_creature,
+    return_creature_to_owner_pool,
 )
 from card_duel.cards.slugcat.hand import draw_non_creatures
 from card_duel.cards.slugcat.specs import (
@@ -258,7 +259,12 @@ def run_away(context):
     amount = 0 if context.ignore_cost else context.source.energy
     context.source.energy = 0
     draw_count = max(0, amount - 1)
-    remove_all_local_hand_creatures(context.state, context.source_player_id)
+    removed = remove_all_local_hand_creatures(
+        context.state, context.source_player_id
+    )
+    # 跑路的生物没有死亡，离场后回到主人的可召唤池，之后仍可被猫闯祸召唤。
+    for creature in removed:
+        return_creature_to_owner_pool(context.state, creature)
     obtained = 0
     seen = set(data.seen_discoveries)
     for _ in range(draw_count):
@@ -301,7 +307,7 @@ def trouble(context):
         if data.redirect_creatures_to_opponent
         else context.source_player_id
     )
-    add_hand_creature(
+    creature = add_hand_creature(
         context.state,
         destination,
         creature_id,
@@ -312,6 +318,10 @@ def trouble(context):
         f"玩家{context.source_player_id}闯祸，"
         f"{SLUGCAT_SPECS_BY_ID[creature_id].name}加入玩家{destination}手牌，并抽2张牌"
     )
+    if creature_id == 25:
+        context.announce(
+            f"拾荒者携带物品：{SLUGCAT_SPECS_BY_ID[creature.held_item].name}"
+        )
     return True
 
 
@@ -343,6 +353,8 @@ def _creature(card_id: int):
                 f"玩家{context.target_player_id}手牌"
             )
         else:
+            # 打出生物 = 躲避：消耗能量后生物离开手牌，回合结束不再造成伤害。
+            remove_hand_creature(context.state, context.source_player_id, card_id)
             context.announce(f"玩家{context.source_player_id}打出了{spec.name}")
         return True
 
@@ -429,26 +441,30 @@ def flash_fruit(context):
     if not _pay_cost(context, 43):
         return False
     creatures = context.source.statuses.hand_creatures
-    if creatures:
-        labels = tuple(
-            f"{SLUGCAT_SPECS_BY_ID[item.card_id].name} #{index + 1}"
-            for index, item in enumerate(creatures)
-        )
-        selected = context.choices.choose_option(
-            "闪光果", "选择要转移的生物", labels, labels[0]
-        )
-        index = labels.index(selected) if selected in labels else 0
+    player_label = f"玩家{context.target_player_id}"
+    creature_labels = [
+        f"{SLUGCAT_SPECS_BY_ID[item.card_id].name} #{index + 1}"
+        for index, item in enumerate(creatures)
+    ]
+    labels = [player_label] + creature_labels
+    selected = context.choices.choose_option(
+        "闪光果", "选择目标：转移生物或致盲玩家", labels, labels[0]
+    )
+    if selected in creature_labels:
+        index = creature_labels.index(selected)
         creature = creatures[index]
+        held_item = creature.held_item
         remove_hand_creature(context.state, context.source_player_id, creature.card_id)
-        add_threat(
+        transferred = add_hand_creature(
             context.state,
             context.target_player_id,
             creature.card_id,
             owner_id=creature.owner_id,
         )
+        transferred.held_item = held_item
         context.announce(
-            f"闪光果将{SLUGCAT_SPECS_BY_ID[creature.card_id].name}赶向"
-            f"玩家{context.target_player_id}"
+            f"闪光果将{SLUGCAT_SPECS_BY_ID[creature.card_id].name}转移到"
+            f"玩家{context.target_player_id}手牌"
         )
     else:
         context.target.statuses.attack_lock = 2
@@ -488,7 +504,7 @@ def white_pearl(context):
         return False
     scavenger = remove_hand_creature(context.state, context.source_player_id, 25)
     if scavenger is not None:
-        item = random.choices((1, 3, 4, 5), weights=(6, 1, 2, 1), k=1)[0]
+        item = scavenger.held_item
         add_card_to_hand(context.state, item)
         context.source.statuses.last_dead_creature_health += 5
         context.announce("白珍珠换来了拾荒者携带的物品")
@@ -506,12 +522,13 @@ def colored_pearl(context):
         return False
     scavenger = remove_hand_creature(context.state, context.source_player_id, 25)
     if scavenger is not None:
-        add_threat(
+        hired = add_threat(
             context.state,
             context.target_player_id,
             25,
             owner_id=scavenger.owner_id,
         )
+        hired.held_item = scavenger.held_item
         context.announce(
             f"玩家{context.source_player_id}雇佣拾荒者对付玩家"
             f"{context.target_player_id}"

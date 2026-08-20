@@ -20,6 +20,8 @@ class CreatureState:
     owner_id: PlayerId
     wait_turns: int = 0
     noodle_cost: int = 0
+    shell: bool = True
+    held_item: int = 0
 
 
 @dataclass(slots=True)
@@ -50,6 +52,7 @@ class CombatStatuses:
     pending_hand_additions: list[CardId] = field(default_factory=list)
     pending_hand_removals: list[CardId] = field(default_factory=list)
     pending_draw_returns: list[CardId] = field(default_factory=list)
+    centipede_health: int = 0
 
 
 @dataclass(slots=True)

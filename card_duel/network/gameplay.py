@@ -20,6 +20,7 @@ from card_duel.ui.card_animations import (
 )
 from card_duel.ui.card_interaction import clear_armed_card, route_hand_card_event
 from card_duel.ui.choices import GuiChoiceProvider
+from card_duel.ui.debug_tool import handle_chat_command
 from card_duel.ui.network_log import append_log
 from card_duel.ui.network_style import CHAT_INPUT_KEY, CHAT_SEND_KEY
 from card_duel.ui.network_view import (
@@ -173,13 +174,44 @@ def _run_card_play_phase(session, player_id, opponent_id, announce, choices):
         if event == sg.WIN_CLOSED:
             return False
         if event == CHAT_SEND_KEY:
-            send_chat_message(session, values.get(CHAT_INPUT_KEY, ""))
+            text = values.get(CHAT_INPUT_KEY, "")
+            if not handle_chat_command(session, text):
+                send_chat_message(session, text)
             continue
         receive_pending_chat(session)
         if event == "-btn1-":
             return True
         routed = route_hand_card_event(session, event)
-        if routed is None or routed[0] != "confirmed":
+        if routed is None:
+            continue
+        if routed[0] == "confirmed_creature":
+            creatures = [
+                item
+                for item in game_state.local_player.statuses.hand_creatures
+                if item.card_id != 26
+            ]
+            creature_index = routed[1]
+            if creature_index >= len(creatures):
+                continue
+            card_id = creatures[creature_index].card_id
+            character_id = game_state.character_ids[player_id]
+            if session.registry.play(
+                state=game_state,
+                character_id=character_id,
+                card_id=card_id,
+                source_player_id=player_id,
+                target_player_id=opponent_id,
+                announce=announce,
+                choices=choices,
+                combat=session.combat,
+                private_announce=lambda message: append_log(session, message),
+            ):
+                send_card_played(session, player_id, character_id, card_id)
+                clear_armed_card(session)
+                refresh_cards(game_state, window, session.card_images)
+                send_game_state(session)
+            continue
+        if routed[0] != "confirmed":
             continue
         hand_index = routed[1]
         if hand_index >= len(game_state.hand_cards):
@@ -252,7 +284,9 @@ def _run_discard_phase(session, announce):
         if event == sg.WIN_CLOSED:
             return False
         if event == CHAT_SEND_KEY:
-            send_chat_message(session, values.get(CHAT_INPUT_KEY, ""))
+            text = values.get(CHAT_INPUT_KEY, "")
+            if not handle_chat_command(session, text):
+                send_chat_message(session, text)
             continue
         receive_pending_chat(session)
         if (

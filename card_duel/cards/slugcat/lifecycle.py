@@ -7,6 +7,7 @@ import random
 from card_duel.cards.slugcat.creatures import (
     add_hand_creature,
     add_threat,
+    centipede_health,
     on_creature_death,
     remove_hand_creature,
     resolve_attack,
@@ -79,24 +80,30 @@ class SlugcatRules:
         if amount <= 0:
             return amount
         statuses = state.players[player_id].statuses
+        # 自己一侧（手牌/威胁区）有几张红边体节就免伤几次，双方各自算。
         creature = next(
-            (item for item in statuses.hand_creatures if item.card_id == 22), None
+            (
+                item
+                for item in statuses.hand_creatures
+                if item.card_id == 22 and item.shell
+            ),
+            None,
         )
-        zone = statuses.hand_creatures
         if creature is None:
             creature = next(
-                (item for item in statuses.creature_threats if item.card_id == 22),
+                (
+                    item
+                    for item in statuses.creature_threats
+                    if item.card_id == 22 and item.shell
+                ),
                 None,
             )
-            zone = statuses.creature_threats
         if creature is None:
             return amount
-        if zone is statuses.hand_creatures:
-            remove_hand_creature(state, player_id, 22)
-        else:
-            zone.remove(creature)
+        # 免伤一次：消耗这张体节的甲壳，体节保留但失去甲壳（红边变黑边）。
+        creature.shell = False
         if announce:
-            announce(f"玩家{player_id}消耗一张烈焰蜈蚣免受本次伤害")
+            announce(f"玩家{player_id}消耗一张烈焰蜈蚣的甲壳免受本次伤害")
         return 0
 
     def resolve_attack(
@@ -203,6 +210,10 @@ def _resolve_creatures(context, combat) -> None:
     if not all_creatures:
         return
 
+    # 回合结束先快照当时在场的生物：本阶段新增的生物（小面条死亡引来的
+    # 面条蝇、射线虫引来的秃鹫等）不参与本次结算，留到下个回合结束才出伤。
+    damage_creatures = list(statuses.hand_creatures) + list(statuses.creature_threats)
+
     if any(item.card_id in LIZARD_IDS for item in all_creatures):
         for noodle in [item for item in statuses.hand_creatures if item.card_id == 16]:
             remove_hand_creature(state, player_id, 16)
@@ -225,8 +236,9 @@ def _resolve_creatures(context, combat) -> None:
             private_announce=context.private_announce,
         )
 
+    pacified_creature_ids: set[int] = set()
     if context.choices is not None:
-        for _creature in [
+        for creature in [
             item for item in statuses.hand_creatures if item.card_id == 23
         ]:
             if player.energy < 1:
@@ -240,40 +252,46 @@ def _resolve_creatures(context, combat) -> None:
             if choice != "支付1点能量":
                 break
             player.energy -= 1
-            removed = remove_hand_creature(state, player_id, 23)
-            if removed is not None:
-                if removed.owner_id == state.local_player_id:
-                    # 烈焰蜥蜴返还到 unlocked_creature_counts 等待下次召唤
-                    data = slugcat_data(state.players[removed.owner_id])
-                    data.unlocked_creature_counts[23] = (
-                        data.unlocked_creature_counts.get(23, 0) + 1
-                    )
-                else:
-                    state.players[
-                        removed.owner_id
-                    ].statuses.pending_draw_returns.append(23)
-            context.announce(f"玩家{player_id}支付1点能量，烈焰蜥蜴返回牌堆")
+            # 支付能量只避免本回合攻击，烈焰蜥蜴仍留在手牌。
+            pacified_creature_ids.add(id(creature))
+            context.announce(f"玩家{player_id}支付1点能量，烈焰蜥蜴本回合不攻击")
 
     centipede_count = sum(
         item.card_id == 22
         for item in statuses.hand_creatures + statuses.creature_threats
     )
-    for creature in list(statuses.hand_creatures) + list(statuses.creature_threats):
+    for creature in damage_creatures:
+        if id(creature) in pacified_creature_ids:
+            continue
+        if not _creature_still_present(creature, statuses):
+            continue
         damage = _creature_damage(
             creature, centipede_count, player_id, context.announce
         )
         if damage:
-            combat.apply_damage(damage, player_id, context.announce)
-            if creature.card_id != 25:
-                context.announce(
-                    f"{SLUGCAT_SPECS_BY_ID[creature.card_id].name}"
-                    f"对玩家{player_id}造成{damage}点伤害"
-                )
-        if creature.card_id == 18 and creature in statuses.hand_creatures:
+            total, agility_consumed, actual = combat.apply_damage_with_report(
+                damage, player_id, context.announce
+            )
+            attacker = SLUGCAT_SPECS_BY_ID[creature.card_id].name
+            if creature.card_id == 25:
+                item_name = SLUGCAT_SPECS_BY_ID[creature.held_item or 1].name
+                attacker = f"拾荒者携带{item_name}"
+            context.announce(
+                f"{attacker}对玩家{player_id}造成{total}点伤害"
+                f"（总伤害{total}，扣敏捷{agility_consumed}，实际扣血{actual}）"
+            )
+        if creature.card_id == 18 and _creature_still_present(creature, statuses):
             add_threat(state, player_id, 19, owner_id=player_id)
             context.announce("射线虫存活至回合结束，引来一张秃鹫")
 
     _resolve_centipede_spread(state, context.round_number, context.announce)
+
+
+def _creature_still_present(creature, statuses) -> bool:
+    """Identity-based presence check for the turn-end snapshot."""
+    return any(
+        item is creature for item in statuses.hand_creatures
+    ) or any(item is creature for item in statuses.creature_threats)
 
 
 def _creature_damage(creature, centipede_count, player_id, announce) -> int:
@@ -298,12 +316,8 @@ def _creature_damage(creature, centipede_count, player_id, announce) -> int:
     if card_id == 24:
         return 15
     if card_id == 25:
-        item, damage = random.choices(
-            (("钢筋", 2), ("炸药", 10), ("炸矛", 3), ("电矛", 3)),
-            weights=(6, 1, 2, 1),
-            k=1,
-        )[0]
-        announce(f"拾荒者携带{item}对玩家{player_id}造成{damage}点伤害")
+        item_id = creature.held_item or 1
+        damage = {1: 2, 3: 10, 4: 3, 5: 3}.get(item_id, 2)
         return damage
     return 0
 
@@ -318,6 +332,8 @@ def _resolve_centipede_spread(state, round_number: int, announce) -> None:
             return
         marker_data.last_centipede_round = round_number
 
+    if centipede_health(state) <= 0:
+        return
     counts = {
         player_id: sum(
             item.card_id == 22
@@ -328,7 +344,10 @@ def _resolve_centipede_spread(state, round_number: int, announce) -> None:
         )
         for player_id in (1, 2)
     }
-    if not any(counts.values()) or counts[1] == counts[2]:
+    if counts[1] == counts[2]:
+        add_hand_creature(state, 1, 22, owner_id=1)
+        add_hand_creature(state, 2, 22, owner_id=2)
+        announce("烈焰蜈蚣增殖，双方各获得一张体节")
         return
     target_id = 1 if counts[1] > counts[2] else 2
     add_hand_creature(state, target_id, 22, owner_id=target_id)

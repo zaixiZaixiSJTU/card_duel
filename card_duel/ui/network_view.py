@@ -127,9 +127,15 @@ def refresh_cards(game_state, window, card_images):
     from card_duel.cards.catalog import DEFAULT_REGISTRY
     from card_duel.core.resources import render_card
 
-    visible_count = min(len(game_state.hand_cards), MAX_HAND_BUTTONS)
+    hand_creatures = list(game_state.local_player.statuses.hand_creatures)
+    # 生物统一排在手牌最后几个槽位；管虫（26）作为实体卡已在 hand_cards 中。
+    creature_tokens = [item for item in hand_creatures if item.card_id != 26]
+    display_items = list(game_state.hand_cards) + [
+        item.card_id for item in creature_tokens
+    ]
+    visible_count = min(len(display_items), MAX_HAND_BUTTONS)
     creature_offsets = {}
-    for hand_index, card_id in enumerate(game_state.hand_cards[:visible_count]):
+    for hand_index, card_id in enumerate(display_items[:visible_count]):
         safe_card_id = card_id if 0 <= card_id < len(card_images) else 0
         image_data = card_images[safe_card_id]
         definition = DEFAULT_REGISTRY.get_card(game_state.local_character_id, card_id)
@@ -140,20 +146,34 @@ def refresh_cards(game_state, window, card_images):
             effective_cost = effective_cost(
                 game_state, game_state.local_player_id, card_id
             )
-        matching = [
-            item
-            for item in game_state.local_player.statuses.hand_creatures
-            if item.card_id == card_id
-        ]
-        offset = creature_offsets.get(card_id, 0)
-        creature = matching[offset] if offset < len(matching) else None
+        creature = None
+        if hand_index < len(game_state.hand_cards):
+            matching = [item for item in hand_creatures if item.card_id == card_id]
+            offset = creature_offsets.get(card_id, 0)
+            creature = matching[offset] if offset < len(matching) else None
+            if creature is not None:
+                creature_offsets[card_id] = offset + 1
+        else:
+            creature = creature_tokens[hand_index - len(game_state.hand_cards)]
+        card_outline = "#2E2A26"
         if creature is not None:
-            creature_offsets[card_id] = offset + 1
-        if effective_cost != definition.cost or creature is not None:
+            if card_id == 22:
+                # 烈焰蜈蚣体节：红边=有甲壳（可免伤一次），黑边=甲壳已消耗。
+                card_outline = COLOR_RED if creature.shell else "#000000"
+            else:
+                card_outline = _creature_border_color(card_images, card_id)
+        elif card_id in (49, 50):
+            card_outline = "#C86655"
+        if (
+            effective_cost != definition.cost
+            or creature is not None
+            or card_id in (49, 50)
+        ):
             image_data = render_card(
                 definition,
                 effective_cost=effective_cost,
                 creature_health=creature.health if creature is not None else None,
+                outline=card_outline,
             )
         _safe_update(
             window,
@@ -161,13 +181,50 @@ def refresh_cards(game_state, window, card_images):
             image_data=image_data,
             visible=True,
         )
-        _apply_card_border(
-            window[f"-BTN{hand_index}-"],
-            "#C86655" if card_id in (49, 50) else "#C39A55",
-            card_id in (49, 50) or creature is not None,
-        )
+        if creature is not None and hand_index >= len(game_state.hand_cards):
+            if card_id == 22:
+                # 烈焰蜈蚣体节：红边=有甲壳（可免伤一次），黑边=甲壳已消耗。
+                border_color = COLOR_RED if creature.shell else "#000000"
+            else:
+                border_color = _creature_border_color(card_images, card_id)
+            _apply_card_border(
+                window[f"-BTN{hand_index}-"],
+                border_color,
+                True,
+            )
+        else:
+            _apply_card_border(
+                window[f"-BTN{hand_index}-"],
+                "#C86655" if card_id in (49, 50) else "#C39A55",
+                card_id in (49, 50) or creature is not None,
+            )
     for button_index in range(visible_count, MAX_HAND_BUTTONS):
         _safe_update(window, f"-BTN{button_index}-", visible=False)
+
+
+_CREATURE_BORDER_CACHE: dict[int, str] = {}
+
+
+def _creature_border_color(card_images, card_id: int) -> str:
+    """Dominant color of a creature's artwork; gold fallback when unavailable."""
+    cached = _CREATURE_BORDER_CACHE.get(card_id)
+    if cached is not None:
+        return cached
+    color = "#C39A55"
+    try:
+        from PIL import Image
+
+        from card_duel.core.resources import resolve_resource_path
+
+        path = resolve_resource_path(f"assets/cards/4/img-{card_id}.jpg")
+        if path.exists():
+            with Image.open(path) as image:
+                pixel = image.convert("RGB").resize((1, 1)).getpixel((0, 0))
+            color = f"#{pixel[0]:02X}{pixel[1]:02X}{pixel[2]:02X}"
+    except Exception:
+        color = "#C39A55"
+    _CREATURE_BORDER_CACHE[card_id] = color
+    return color
 
 
 def _apply_card_border(element, color, emphasized):

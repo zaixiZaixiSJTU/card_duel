@@ -13,6 +13,7 @@ import FreeSimpleGUI as sg
 from card_duel.core.models import DefenceEffect
 from card_duel.network.transport import receive_json, send_json
 from card_duel.ui.auxiliary_windows import read_primary_window
+from card_duel.ui.debug_tool import handle_chat_command
 from card_duel.ui.network_log import append_log
 from card_duel.ui.network_style import CHAT_INPUT_KEY, CHAT_SEND_KEY
 from card_duel.ui.network_view import refresh_status, show_played_card
@@ -50,7 +51,9 @@ def _receive_bytes_with_ui(
             if event == sg.WIN_CLOSED:
                 return b""
             if allow_chat and event == CHAT_SEND_KEY:
-                send_chat_message(session, values.get(CHAT_INPUT_KEY, ""))
+                text = values.get(CHAT_INPUT_KEY, "")
+                if not handle_chat_command(session, text):
+                    send_chat_message(session, text)
                 continue
             if not select.select([connection], [], [], 0)[0]:
                 continue
@@ -275,17 +278,26 @@ def _apply_local_pending_actions(session) -> None:
 
     if statuses.pending_draw_returns:
         if state.character_ids.get(player_id) == 4:
-            from card_duel.cards.slugcat.specs import SLUGCAT_DISCOVERY_IDS
+            from card_duel.cards.slugcat.specs import (
+                SLUGCAT_CREATURE_IDS,
+                SLUGCAT_DISCOVERY_IDS,
+            )
             from card_duel.cards.slugcat.state import slugcat_data
 
             data = slugcat_data(player)
             for card_id in statuses.pending_draw_returns:
                 if card_id in SLUGCAT_DISCOVERY_IDS:
                     data.discovery_pool.append(card_id)
+                elif card_id in SLUGCAT_CREATURE_IDS:
+                    # 未死亡的生物离场（猫跑路）后回到召唤池；
+                    # 死亡生物不返还，也不进入抽牌堆循环。
+                    data.unlocked_creature_counts[card_id] = (
+                        data.unlocked_creature_counts.get(card_id, 0) + 1
+                    )
                 else:
-                    state.draw_pile.append(card_id)
+                    state.discard_pile.append(card_id)
         else:
-            state.draw_pile.extend(statuses.pending_draw_returns)
+            state.discard_pile.extend(statuses.pending_draw_returns)
         statuses.pending_draw_returns.clear()
 
     if statuses.pending_discards:

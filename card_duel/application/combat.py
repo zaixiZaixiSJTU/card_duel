@@ -48,6 +48,17 @@ class CombatEngine:
         actual_loss = rules.prevent_life_loss(target, remaining)
         return self._apply_life_loss(actual_loss, target_player_id, announce)
 
+    def apply_damage_with_report(
+        self, damage: int, target_player_id: int, announce=None
+    ) -> tuple[int, int, int]:
+        """Apply damage and report (total, agility_consumed, actual_loss)."""
+        target = self.state.players[target_player_id]
+        data = getattr(target, "character_data", None)
+        agility_before = getattr(data, "agility", 0) if data is not None else 0
+        actual = self.apply_damage(damage, target_player_id, announce)
+        agility_after = getattr(data, "agility", 0) if data is not None else 0
+        return damage, max(0, agility_before - agility_after), actual
+
     def lose_life(self, amount: int, target_player_id: int, announce=None) -> int:
         target = self.state.players[target_player_id]
         rules = self._rules_for(target_player_id)

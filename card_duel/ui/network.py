@@ -35,6 +35,7 @@ from card_duel.ui.network_style import (
     PHASE_LABELS,
     WINDOW_SIZE,
 )
+from card_duel.ui.opponent_viewer import OPPONENT_VIEW_KEY
 
 
 def _build_status_card(title, accent, key_prefix, paper=COLOR_PAPER):
@@ -389,7 +390,20 @@ def create_main_layout(card_images, hand_cards):
         [phase_tracker],
         [
             sg.Column(
-                [[opponent_status], [local_status], [sg.Text("", background_color=COLOR_BACKGROUND, expand_y=True)]],
+                [
+                    [opponent_status],
+                    [
+                        sg.Button(
+                            "查看对方生物",
+                            key=OPPONENT_VIEW_KEY,
+                            font=FONT_BODY_BOLD,
+                            button_color=(COLOR_INK, COLOR_PAPER_DARK),
+                            border_width=1,
+                        )
+                    ],
+                    [local_status],
+                    [sg.Text("", background_color=COLOR_BACKGROUND, expand_y=True)],
+                ],
                 background_color=COLOR_BACKGROUND,
                 vertical_alignment="top",
                 pad=(1, 0),

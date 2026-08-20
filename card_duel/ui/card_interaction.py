@@ -50,8 +50,34 @@ def route_hand_card_event(session, event) -> tuple[str, int] | None:
     if parsed is None:
         return None
     index, preview = parsed
-    if index >= len(session.state.hand_cards):
+    hand_count = len(session.state.hand_cards)
+    creatures = [
+        item
+        for item in session.state.local_player.statuses.hand_creatures
+        if item.card_id != 26
+    ]
+    if index >= hand_count + len(creatures):
         return None
+    if index >= hand_count:
+        creature_index = index - hand_count
+        if preview:
+            open_card_preview(
+                session, session.card_images[creatures[creature_index].card_id]
+            )
+            return "preview_creature", creature_index
+        if session.armed_creature_index == creature_index:
+            _mark_armed(session, index, False)
+            session.armed_creature_index = None
+            _set_card_hint(session, "生物已确认，正在结算……")
+            return "confirmed_creature", creature_index
+        if session.armed_creature_index is not None:
+            _mark_armed(
+                session, hand_count + session.armed_creature_index, False
+            )
+        session.armed_creature_index = creature_index
+        _mark_armed(session, index, True)
+        _set_card_hint(session, "生物已抬起 · 再次左键确认打出 · 右键放大预览")
+        return "armed_creature", creature_index
     if preview:
         preview_hand_card(session, index)
         return "preview", index
@@ -71,7 +97,11 @@ def route_hand_card_event(session, event) -> tuple[str, int] | None:
 def clear_armed_card(session) -> None:
     if session.armed_hand_index is not None:
         _mark_armed(session, session.armed_hand_index, False)
+    creature_index = getattr(session, "armed_creature_index", None)
+    if creature_index is not None:
+        _mark_armed(session, len(session.state.hand_cards) + creature_index, False)
     session.armed_hand_index = None
+    session.armed_creature_index = None
     _set_card_hint(session, "左键一次选中，再次确认 · 右键放大预览")
 
 
