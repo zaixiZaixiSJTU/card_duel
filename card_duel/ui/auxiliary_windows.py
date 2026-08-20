@@ -14,6 +14,12 @@ from card_duel.ui.opponent_viewer import (
     open_opponent_viewer,
     poll_opponent_viewer,
 )
+from card_duel.ui.settings_window import (
+    SETTINGS_KEY,
+    close_settings,
+    open_settings,
+    poll_settings,
+)
 
 DECK_EVENT_HANDLED = "-DECK-EVENT-HANDLED-"
 
@@ -24,6 +30,7 @@ def poll_auxiliary_windows(session) -> None:
     poll_card_preview(session)
     poll_debug_tool(session)
     poll_opponent_viewer(session)
+    poll_settings(session)
 
 
 def read_primary_window(session, timeout=24):
@@ -36,6 +43,9 @@ def read_primary_window(session, timeout=24):
     elif event == OPPONENT_VIEW_KEY:
         open_opponent_viewer(session)
         event = DECK_EVENT_HANDLED
+    elif event == SETTINGS_KEY:
+        open_settings(session)
+        event = DECK_EVENT_HANDLED
     poll_auxiliary_windows(session)
     return event, values
 
@@ -46,3 +56,4 @@ def close_auxiliary_windows(session) -> None:
     close_deck_viewer(session)
     close_debug_tool(session)
     close_opponent_viewer(session)
+    close_settings(session)

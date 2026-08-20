@@ -130,7 +130,7 @@ def build_deck_viewer_panel(card_images):
                         key=f"-DECK-SLOT-{slot}-",
                         visible=False,
                         background_color=COLOR_PAPER,
-                        element_justification="center",
+                        element_justification="left",
                         pad=(2, 3),
                     )
                 )
@@ -184,7 +184,7 @@ def build_deck_viewer_panel(card_images):
         background_color=COLOR_PAPER,
         expand_x=True,
         expand_y=True,
-        element_justification="center",
+        element_justification="left",
         scrollable=True,
         vertical_scroll_only=True,
     )
@@ -206,6 +206,49 @@ def bind_deck_viewer_events(window) -> None:
             window[f"{DECK_CARD_PREFIX}{slot}-"].bind("<Button-3>", " RIGHT")
         except Exception:
             continue
+    _bind_deck_scroll_wheel(window)
+
+
+def _bind_deck_scroll_wheel(window) -> None:
+    """Scroll the deck browser with the wheel even over its child buttons.
+
+    FreeSimpleGUI 的多个可滚动列共用 bind_all 全局滚轮绑定，鼠标悬停位置
+    不同时会滚动到错误的画布或完全失效；这里直接绑定到本画布及其所有子
+    控件，并返回 "break" 阻止全局绑定重复滚动。
+    """
+    try:
+        widget = window[DECK_GRID_KEY].Widget
+        canvas = next(
+            (child for child in widget.winfo_children() if child.winfo_class() == "Canvas"),
+            None,
+        )
+    except Exception:
+        return
+    if canvas is None:
+        return
+
+    def _scroll(event):
+        try:
+            if event.num == 5 or getattr(event, "delta", 0) < 0:
+                canvas.yview_scroll(3, "units")
+            elif event.num == 4 or getattr(event, "delta", 0) > 0:
+                canvas.yview_scroll(-3, "units")
+        except Exception:
+            pass
+        return "break"
+
+    targets = [canvas]
+    stack = list(canvas.winfo_children())
+    while stack:
+        child = stack.pop()
+        targets.append(child)
+        stack.extend(child.winfo_children())
+    for target in targets:
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            try:
+                target.bind(sequence, _scroll, add="+")
+            except Exception:
+                continue
 
 
 def open_deck_viewer(session, *, mode: str = "all") -> None:
@@ -223,6 +266,50 @@ def open_deck_viewer(session, *, mode: str = "all") -> None:
     window[GAME_PANEL_KEY].update(visible=False)
     window[DECK_PANEL_KEY].update(visible=True)
     window.refresh()
+    _fit_deck_browser(session)
+    try:
+        panel_widget = window[DECK_PANEL_KEY].Widget
+        panel_widget.bind(
+            "<Configure>",
+            lambda _event: _fit_deck_browser(session),
+            add="+",
+        )
+    except Exception:
+        pass
+
+
+def _fit_deck_browser(session) -> None:
+    """Keep the deck canvas sized to the visible panel area.
+
+    小窗口/被系统裁剪时，滚动列按初始固定尺寸创建会超出可视区域，导致
+    滚轮看似失效；这里按面板实际尺寸重设画布并刷新滚动区域，全屏/缩放
+    时由 <Configure> 持续同步。
+    """
+    try:
+        window = session.require_window()
+        panel = window[DECK_PANEL_KEY].Widget
+        browser = window[DECK_GRID_KEY].Widget
+        canvas = next(
+            (
+                child
+                for child in browser.winfo_children()
+                if child.winfo_class() == "Canvas"
+            ),
+            None,
+        )
+        panel_w = panel.winfo_width()
+        panel_h = panel.winfo_height()
+        top = browser.winfo_rooty() - panel.winfo_rooty()
+        left = browser.winfo_rootx() - panel.winfo_rootx()
+        if panel_w <= 1 or panel_h <= 1 or top < 0 or left < 0:
+            return
+        canvas.configure(
+            width=max(240, panel_w - left - 12),
+            height=max(240, panel_h - top - 12),
+            scrollregion=canvas.bbox("all"),
+        )
+    except Exception:
+        return
 
 
 def refresh_deck_viewer(session, *, force=False) -> bool:

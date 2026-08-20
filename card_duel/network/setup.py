@@ -65,5 +65,8 @@ def prepare_game_window(session) -> bool:
     )
     bind_hand_card_events(session.require_window())
     bind_deck_viewer_events(session.require_window())
+    from card_duel.ui.app_settings import load_settings
+
+    load_settings(session)
     refresh_cards(state, session.require_window(), session.card_images)
     return True

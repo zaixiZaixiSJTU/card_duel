@@ -36,6 +36,7 @@ from card_duel.ui.network_style import (
     WINDOW_SIZE,
 )
 from card_duel.ui.opponent_viewer import OPPONENT_VIEW_KEY
+from card_duel.ui.settings_window import SETTINGS_KEY
 
 
 def _build_status_card(title, accent, key_prefix, paper=COLOR_PAPER):
@@ -402,6 +403,15 @@ def create_main_layout(card_images, hand_cards):
                         )
                     ],
                     [local_status],
+                    [
+                        sg.Button(
+                            "设置",
+                            key=SETTINGS_KEY,
+                            font=FONT_BODY_BOLD,
+                            button_color=(COLOR_INK, COLOR_PAPER_DARK),
+                            border_width=1,
+                        )
+                    ],
                     [sg.Text("", background_color=COLOR_BACKGROUND, expand_y=True)],
                 ],
                 background_color=COLOR_BACKGROUND,

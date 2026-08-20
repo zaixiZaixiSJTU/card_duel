@@ -17,8 +17,36 @@ from card_duel.ui.network_style import (
     COLOR_RED,
     MAX_HAND_BUTTONS,
     MAX_HEALTH_DISPLAY,
-    PHASE_LABELS,
+PHASE_LABELS,
 )
+
+# 卡牌类型边框色彩配置：标识号 + 显示名 + 默认颜色。
+CARD_BORDER_TYPES = (
+    ("normal", "普通手牌", "#2E2A26"),
+    ("creature", "生物", "#C39A55"),
+    ("inserted", "插入物(49/50)", "#C86655"),
+    ("centipede_shell", "烈焰蜈蚣·有甲壳", "#C86655"),
+    ("centipede_shellless", "烈焰蜈蚣·无甲壳", "#000000"),
+)
+_card_border_colors = {key: color for key, _, color in CARD_BORDER_TYPES}
+
+
+def set_card_border_colors(config) -> None:
+    """Update the runtime card border colors from the settings window."""
+    for key, value in (config or {}).items():
+        if key in _card_border_colors and isinstance(value, str):
+            _card_border_colors[key] = value
+
+
+def _border_color_for(card_id, creature, card_images) -> str:
+    if creature is not None:
+        if card_id == 22:
+            key = "centipede_shell" if creature.shell else "centipede_shellless"
+            return _card_border_colors[key]
+        return _card_border_colors["creature"]
+    if card_id in (49, 50):
+        return _card_border_colors["inserted"]
+    return _card_border_colors["normal"]
 
 
 def refresh_status(game_state, window, registry, snapshots=None):
@@ -155,15 +183,7 @@ def refresh_cards(game_state, window, card_images):
                 creature_offsets[card_id] = offset + 1
         else:
             creature = creature_tokens[hand_index - len(game_state.hand_cards)]
-        card_outline = "#2E2A26"
-        if creature is not None:
-            if card_id == 22:
-                # 烈焰蜈蚣体节：红边=有甲壳（可免伤一次），黑边=甲壳已消耗。
-                card_outline = COLOR_RED if creature.shell else "#000000"
-            else:
-                card_outline = _creature_border_color(card_images, card_id)
-        elif card_id in (49, 50):
-            card_outline = "#C86655"
+        card_outline = _border_color_for(card_id, creature, card_images)
         if (
             effective_cost != definition.cost
             or creature is not None
@@ -181,50 +201,13 @@ def refresh_cards(game_state, window, card_images):
             image_data=image_data,
             visible=True,
         )
-        if creature is not None and hand_index >= len(game_state.hand_cards):
-            if card_id == 22:
-                # 烈焰蜈蚣体节：红边=有甲壳（可免伤一次），黑边=甲壳已消耗。
-                border_color = COLOR_RED if creature.shell else "#000000"
-            else:
-                border_color = _creature_border_color(card_images, card_id)
-            _apply_card_border(
-                window[f"-BTN{hand_index}-"],
-                border_color,
-                True,
-            )
-        else:
-            _apply_card_border(
-                window[f"-BTN{hand_index}-"],
-                "#C86655" if card_id in (49, 50) else "#C39A55",
-                card_id in (49, 50) or creature is not None,
-            )
+        _apply_card_border(
+            window[f"-BTN{hand_index}-"],
+            card_outline,
+            True,
+        )
     for button_index in range(visible_count, MAX_HAND_BUTTONS):
         _safe_update(window, f"-BTN{button_index}-", visible=False)
-
-
-_CREATURE_BORDER_CACHE: dict[int, str] = {}
-
-
-def _creature_border_color(card_images, card_id: int) -> str:
-    """Dominant color of a creature's artwork; gold fallback when unavailable."""
-    cached = _CREATURE_BORDER_CACHE.get(card_id)
-    if cached is not None:
-        return cached
-    color = "#C39A55"
-    try:
-        from PIL import Image
-
-        from card_duel.core.resources import resolve_resource_path
-
-        path = resolve_resource_path(f"assets/cards/4/img-{card_id}.jpg")
-        if path.exists():
-            with Image.open(path) as image:
-                pixel = image.convert("RGB").resize((1, 1)).getpixel((0, 0))
-            color = f"#{pixel[0]:02X}{pixel[1]:02X}{pixel[2]:02X}"
-    except Exception:
-        color = "#C39A55"
-    _CREATURE_BORDER_CACHE[card_id] = color
-    return color
 
 
 def _apply_card_border(element, color, emphasized):

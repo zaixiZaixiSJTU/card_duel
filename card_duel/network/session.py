@@ -30,6 +30,11 @@ class GameSession:
     preview_window: Any | None = None
     debug_tool_window: Any | None = None
     opponent_viewer_window: Any | None = None
+    settings_window: Any | None = None
+    log_type_colors: dict[str, str] = field(default_factory=dict)
+    card_border_colors: dict[str, str] = field(default_factory=dict)
+    log_history: list[str] = field(default_factory=list)
+    settings_color_snapshot: dict[str, str] = field(default_factory=dict)
     animation_windows: list[Any] = field(default_factory=list)
     animation_callbacks: list[tuple[Any, str]] = field(default_factory=list)
     status_snapshots: dict[int, tuple[int, int, int, int]] = field(default_factory=dict)

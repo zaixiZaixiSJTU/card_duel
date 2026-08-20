@@ -38,11 +38,19 @@ from card_duel.ui.deck_viewer import (
     handle_deck_viewer_event,
     refresh_deck_viewer,
 )
-from card_duel.ui.network_log import classify_log_color
-from card_duel.ui.network_style import COLOR_BLUE, COLOR_GREEN, COLOR_RED
+from card_duel.ui.network_log import append_log, classify_log_color, log_category
+from card_duel.ui.network_style import (
+    COLOR_BLUE,
+    COLOR_GREEN,
+    COLOR_MUTED,
+    COLOR_RED,
+)
 from card_duel.ui.opponent_viewer import (
     _opponent_creatures,
     _refresh_opponent_viewer,
+)
+from card_duel.ui.settings_window import (
+    _apply_live_color_changes,
 )
 
 
@@ -99,6 +107,34 @@ class _ManagedWidget:
 
     def grid_configure(self, **kwargs):
         self.grid_options.append(kwargs)
+
+
+class _RecordingWidget:
+    def __init__(self):
+        self.lines = []
+        self.calls = []
+
+    def configure(self, **kwargs):
+        self.calls.append(("configure", kwargs))
+        return None
+
+    def tag_configure(self, *args, **kwargs):
+        self.calls.append(("tag_configure", args, kwargs))
+        return None
+
+    def insert(self, index, text, *_args):
+        self.lines.append(text)
+        self.calls.append(("insert", index, text))
+        return None
+
+    def delete(self, *_args):
+        self.lines.clear()
+        self.calls.append(("delete", _args))
+        return None
+
+    def see(self, *_args):
+        self.calls.append(("see", _args))
+        return None
 
 
 class UiLogicTests(unittest.TestCase):
@@ -293,9 +329,155 @@ class UiLogicTests(unittest.TestCase):
         self.assertEqual(groups["可召唤生物（不进牌堆）"], {16: 2, 20: 3})
 
     def test_log_colors_distinguish_chat_damage_and_draws(self):
-        self.assertEqual(classify_log_color("[我] 你好"), COLOR_BLUE)
+        self.assertEqual(classify_log_color("[我] 你好"), COLOR_MUTED)
+        self.assertEqual(classify_log_color("回合开始时"), COLOR_BLUE)
         self.assertEqual(classify_log_color("玩家2失去3点生命"), COLOR_RED)
         self.assertEqual(classify_log_color("抽牌：翻滚"), COLOR_GREEN)
+
+    def test_log_category_classifies_message_types(self):
+        self.assertEqual(log_category("[我] 你好"), "chat")
+        self.assertEqual(log_category("[对方] 你好"), "chat")
+        self.assertEqual(
+            log_category(" ---------------------------------------------------- "),
+            "chat",
+        )
+        self.assertEqual(log_category("回合开始时"), "turn")
+        self.assertEqual(log_category("玩家2失去5点生命"), "damage")
+        self.assertEqual(log_category("抽牌：猫跑路了"), "gain")
+        self.assertEqual(log_category("能量不足"), "warn")
+        self.assertEqual(log_category("玩家1打出闪光果"), "normal")
+
+    def test_log_type_color_config_is_used_by_append_log(self):
+        state = self._slugcat_state()
+        window = _Window()
+        recorder = _RecordingWidget()
+        element = _Element()
+        element.Widget = recorder
+        window.elements["-OUTPUT-"] = element
+        session = SimpleNamespace(
+            state=state,
+            card_images=[b""] * 51,
+            log_type_colors={"damage": "#FF0000"},
+            require_window=lambda: window,
+        )
+
+        append_log(session, "玩家2失去5点生命")
+
+        self.assertTrue(recorder.lines)
+        self.assertTrue(
+            any("#FF0000" in str(call) for call in recorder.calls)
+        )
+
+    def test_live_log_color_change_applies_immediately(self):
+        import tempfile
+
+        from card_duel.ui import app_settings
+
+        state = self._slugcat_state()
+        window = _Window()
+        recorder = _RecordingWidget()
+        element = _Element()
+        element.Widget = recorder
+        window.elements["-OUTPUT-"] = element
+        session = SimpleNamespace(
+            state=state,
+            card_images=[b""] * 51,
+            log_type_colors={},
+            card_border_colors={},
+            log_history=["玩家2失去5点生命"],
+            require_window=lambda: window,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(
+                app_settings, "CONFIG_PATH", f"{tmp}/settings.json"
+            ):
+                _apply_live_color_changes(
+                    session, {"-LOGCOLOR-damage-": "#ff0000"}
+                )
+
+        self.assertEqual(session.log_type_colors["damage"], "#FF0000")
+        self.assertTrue(any("#FF0000" in str(call) for call in recorder.calls))
+
+    def test_live_border_color_change_is_placeholder_only(self):
+        import tempfile
+
+        from card_duel.ui import app_settings
+        from card_duel.ui.network_view import _card_border_colors as runtime
+
+        state = self._slugcat_state()
+        window = _Window()
+        recorder = _RecordingWidget()
+        element = _Element()
+        element.Widget = recorder
+        window.elements["-OUTPUT-"] = element
+        session = SimpleNamespace(
+            state=state,
+            card_images=[b""] * 51,
+            log_type_colors={},
+            card_border_colors={},
+            log_history=[],
+            require_window=lambda: window,
+        )
+        before = runtime["creature"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(
+                app_settings, "CONFIG_PATH", f"{tmp}/settings.json"
+            ):
+                _apply_live_color_changes(
+                    session, {"-CARDCOLOR-creature-": "#00FF00"}
+                )
+
+        self.assertEqual(session.card_border_colors["creature"], "#00FF00")
+        self.assertEqual(runtime["creature"], before)
+        self.assertTrue(any("占位" in line for line in recorder.lines))
+
+    def test_settings_save_load_round_trip(self):
+        import tempfile
+
+        from card_duel.ui import app_settings
+
+        source = SimpleNamespace(
+            log_type_colors={"damage": "#FF0000"},
+            card_border_colors={"creature": "#00FF00"},
+        )
+        target = SimpleNamespace(
+            log_type_colors={},
+            card_border_colors={},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(
+                app_settings, "CONFIG_PATH", f"{tmp}/settings.json"
+            ):
+                app_settings.save_settings(source)
+                app_settings.load_settings(target)
+
+        self.assertEqual(target.log_type_colors, {"damage": "#FF0000"})
+        self.assertEqual(target.card_border_colors, {"creature": "#00FF00"})
+
+    def test_rerender_log_uses_current_colors(self):
+        from card_duel.ui.network_log import rerender_log
+
+        state = self._slugcat_state()
+        window = _Window()
+        recorder = _RecordingWidget()
+        element = _Element()
+        element.Widget = recorder
+        window.elements["-OUTPUT-"] = element
+        session = SimpleNamespace(
+            state=state,
+            card_images=[b""] * 51,
+            log_type_colors={"damage": "#FF0000"},
+            log_history=["玩家2失去5点生命", "[我] 在吗"],
+            require_window=lambda: window,
+        )
+
+        rerender_log(session)
+
+        self.assertTrue(any("#FF0000" in str(call) for call in recorder.calls))
+        self.assertEqual(recorder.lines.count("玩家2失去5点生命\n"), 1)
+        self.assertIn("[我] 在吗\n", recorder.lines)
 
     def test_deck_card_preview_requires_right_click(self):
         session = SimpleNamespace(
