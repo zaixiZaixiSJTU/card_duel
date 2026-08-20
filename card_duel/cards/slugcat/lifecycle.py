@@ -125,7 +125,9 @@ class SlugcatRules:
         return f"业力 {data.karma}/{data.karma_max}  ·  饱食 {data.satiety}"
 
 
-def resolve_pending_discards(state, player_id: int, announce=None) -> int:
+def resolve_pending_discards(
+    state, player_id: int, announce=None, on_discard=None
+) -> int:
     """Resolve explosive-spear discards immediately on the affected endpoint."""
     player = state.players[player_id]
     pending = player.statuses.pending_discards
@@ -144,6 +146,8 @@ def resolve_pending_discards(state, player_id: int, announce=None) -> int:
         if not allowed:
             break
         index = random.choice(allowed)
+        if on_discard is not None:
+            on_discard(index, state.hand_cards[index])
         card_id = state.hand_cards.pop(index)
         _return_discarded_card(state, player_id, card_id)
         pending -= 1

@@ -12,6 +12,8 @@ from card_duel.ui.network_style import (
     COLOR_INK,
     COLOR_MUTED,
     COLOR_PAPER,
+    COLOR_PAPER_LOCAL,
+    COLOR_PAPER_OPPONENT,
     COLOR_RED,
     MAX_HAND_BUTTONS,
     MAX_HEALTH_DISPLAY,
@@ -255,6 +257,11 @@ def _flash_changed_values(window, prefix, previous, current) -> None:
     """Briefly tint changed values without blocking the network event loop."""
     if previous is None:
         return
+    restore_color = (
+        COLOR_PAPER_OPPONENT if prefix == "EN"
+        else COLOR_PAPER_LOCAL if prefix == "MY"
+        else COLOR_PAPER
+    )
     for suffix, before, after in zip(
         ("HP", "EN", "DEF", "STR"), previous, current, strict=True
     ):
@@ -266,7 +273,7 @@ def _flash_changed_values(window, prefix, previous, current) -> None:
             widget.configure(background=color)
             window.TKroot.after(
                 420,
-                lambda item=widget: item.configure(background=COLOR_PAPER),
+                lambda item=widget: item.configure(background=restore_color),
             )
         except Exception:
             continue

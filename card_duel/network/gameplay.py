@@ -5,7 +5,7 @@ from contextlib import suppress
 import FreeSimpleGUI as sg
 
 from card_duel.core.game import TurnEngine, TurnPhase
-from card_duel.core.rules import draw_cards, reshuffle_discard_into_draw
+from card_duel.core.rules import draw_cards
 from card_duel.network.protocol import (
     receive_pending_chat,
     send_announcement,
@@ -13,13 +13,13 @@ from card_duel.network.protocol import (
     send_chat_message,
     send_game_state,
 )
+from card_duel.ui.auxiliary_windows import read_primary_window
+from card_duel.ui.card_animations import (
+    animate_card_action,
+    animate_hand_additions,
+)
 from card_duel.ui.card_interaction import clear_armed_card, route_hand_card_event
 from card_duel.ui.choices import GuiChoiceProvider
-from card_duel.ui.deck_viewer import (
-    DECK_VIEW_KEY_DISCARD,
-    DECK_VIEW_KEY_DRAW,
-    open_deck_viewer,
-)
 from card_duel.ui.network_log import append_log
 from card_duel.ui.network_style import CHAT_INPUT_KEY, CHAT_SEND_KEY
 from card_duel.ui.network_view import (
@@ -73,8 +73,10 @@ def play_active_turn(session, player_id, round_number):
     _enter_phase(session, turn, TurnPhase.TURN_START)
 
     # 抽牌阶段：执行标准抽牌及额外抽牌能力。
+    hand_before_draw = list(game_state.hand_cards)
     _enter_phase(session, turn, TurnPhase.DRAW)
     refresh_cards(game_state, window, session.card_images)
+    animate_hand_additions(session, hand_before_draw)
     send_game_state(session)
 
     # 出牌阶段：仅在此阶段接受卡牌输入。
@@ -121,32 +123,21 @@ def _draw_turn_cards(context, local_announce=None):
 
 
 def _draw_slugcat_cards(game_state, skill_count, item_count, announce):
-    """Draw by type without ever actively drawing creature cards.
-
-    When the requested card type cannot be found in the draw pile, the discard
-    pile is shuffled in (Slay-the-Spire style) before giving up, so that the
-    per-round draw order is not fixed by an empty top of pile.
-    """
+    """Draw by type without ever actively drawing creature cards."""
     from card_duel.cards.slugcat.specs import SLUGCAT_SPECS_BY_ID
 
     drawn = []
 
-    def find_index(card_type):
-        return next(
-            (
-                index
-                for index, card_id in enumerate(game_state.draw_pile)
-                if SLUGCAT_SPECS_BY_ID[card_id].card_type == card_type
-            ),
-            None,
-        )
-
     def draw_type(card_type, amount):
         for _ in range(amount):
-            index = find_index(card_type)
-            if index is None and game_state.discard_pile:
-                reshuffle_discard_into_draw(game_state)
-                index = find_index(card_type)
+            index = next(
+                (
+                    index
+                    for index, card_id in enumerate(game_state.draw_pile)
+                    if SLUGCAT_SPECS_BY_ID[card_id].card_type == card_type
+                ),
+                None,
+            )
             if index is None:
                 break
             drawn.append(game_state.draw_pile.pop(index))
@@ -162,16 +153,6 @@ def _draw_slugcat_cards(game_state, skill_count, item_count, announce):
             ),
             None,
         )
-        if index is None and game_state.discard_pile:
-            reshuffle_discard_into_draw(game_state)
-            index = next(
-                (
-                    index
-                    for index, card_id in enumerate(game_state.draw_pile)
-                    if SLUGCAT_SPECS_BY_ID[card_id].card_type not in {"生物", "见闻"}
-                ),
-                None,
-            )
         if index is None:
             break
         drawn.append(game_state.draw_pile.pop(index))
@@ -188,19 +169,12 @@ def _run_card_play_phase(session, player_id, opponent_id, announce, choices):
     clear_armed_card(session)
     set_cards_enabled(window, True)
     while True:
-        event, values = window.read(timeout=120)
+        event, values = read_primary_window(session)
         if event == sg.WIN_CLOSED:
             return False
         if event == CHAT_SEND_KEY:
             send_chat_message(session, values.get(CHAT_INPUT_KEY, ""))
             continue
-        if event == DECK_VIEW_KEY_DRAW:
-            open_deck_viewer(session, mode="draw")
-            continue
-        if event == DECK_VIEW_KEY_DISCARD:
-            open_deck_viewer(session, mode="discard")
-            continue
-
         receive_pending_chat(session)
         if event == "-btn1-":
             return True
@@ -213,6 +187,7 @@ def _run_card_play_phase(session, player_id, opponent_id, announce, choices):
         card_id = game_state.hand_cards[hand_index]
         character_id = game_state.character_ids[player_id]
         definition = session.registry.get_card(character_id, card_id)
+        hand_before_play = list(game_state.hand_cards)
         if session.registry.play(
             state=game_state,
             character_id=character_id,
@@ -226,10 +201,14 @@ def _run_card_play_phase(session, player_id, opponent_id, announce, choices):
         ):
             send_card_played(session, player_id, character_id, card_id)
             clear_armed_card(session)
+            animate_card_action(session, hand_index, "play")
             if not definition.exhausted:
                 _return_card_after_use(game_state, player_id, card_id)
             _remove_played_card(game_state, hand_index, card_id)
             refresh_cards(game_state, window, session.card_images)
+            with suppress(ValueError):
+                hand_before_play.remove(card_id)
+            animate_hand_additions(session, hand_before_play)
             send_game_state(session)
 
 
@@ -245,11 +224,6 @@ def _remove_played_card(game_state, original_index, card_id):
 
 
 def _return_card_after_use(game_state, player_id, card_id):
-    """Return a played non-exhausted or discarded card to circulation.
-
-    Cards re-enter via the discard pile so they only reappear in the draw pile
-    after the next reshuffle, keeping each round's draw order random.
-    """
     from card_duel.cards.slugcat.specs import SLUGCAT_DISCOVERY_IDS
     from card_duel.cards.slugcat.state import SlugcatData, slugcat_data
 
@@ -274,19 +248,12 @@ def _run_discard_phase(session, announce):
     announce(f"需要弃牌:{excess_cards}" if excess_cards else "无需弃牌")
 
     while game_state.hand_size > 0:
-        event, values = window.read(timeout=120)
+        event, values = read_primary_window(session)
         if event == sg.WIN_CLOSED:
             return False
         if event == CHAT_SEND_KEY:
             send_chat_message(session, values.get(CHAT_INPUT_KEY, ""))
             continue
-        if event == DECK_VIEW_KEY_DRAW:
-            open_deck_viewer(session, mode="draw")
-            continue
-        if event == DECK_VIEW_KEY_DISCARD:
-            open_deck_viewer(session, mode="discard")
-            continue
-
         receive_pending_chat(session)
         if (
             event == "-btn1-"
@@ -304,6 +271,7 @@ def _run_discard_phase(session, announce):
             announce("生物牌和插入物不可弃置")
             continue
         clear_armed_card(session)
+        animate_card_action(session, hand_index, "discard")
         game_state.hand_cards.pop(hand_index)
         _return_card_after_use(game_state, player_id, card_id)
         refresh_cards(game_state, window, session.card_images)

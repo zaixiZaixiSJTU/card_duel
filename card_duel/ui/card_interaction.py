@@ -2,102 +2,33 @@
 
 from __future__ import annotations
 
-import base64
-import io
-
 import FreeSimpleGUI as sg
 
+from card_duel.ui.card_animations import enlarged_card_image
 from card_duel.ui.network_style import (
     COLOR_BLUE,
+    COLOR_INK,
+    COLOR_MUTED,
     COLOR_PAPER,
+    COLOR_PAPER_DARK,
+    FONT_BODY,
+    FONT_BODY_BOLD,
     MAX_HAND_BUTTONS,
 )
 
 RIGHT_CLICK_SUFFIX = " RIGHT"
 
 
-def _enlarge(image_data: bytes, scale: float = 1.5) -> bytes:
-    """Upscale a card image so the preview is larger than the original."""
-    from PIL import Image
-
-    raw = base64.b64decode(image_data)
-    with Image.open(io.BytesIO(raw)) as image:
-        target = (int(image.width * scale), int(image.height * scale))
-        resized = image.resize(target, Image.Resampling.LANCZOS)
-        buffer = io.BytesIO()
-        resized.save(buffer, format="PNG")
-    return base64.b64encode(buffer.getvalue())
-
-
-def show_dismissable_preview(image_data: bytes, parent_window) -> None:
-    """Show a large always-on-top preview that closes on any click.
-
-    Fixes the "popup invisible until maximize" bug by explicitly mapping the
-    window (deiconify), centering it on the parent, and forcing topmost. No
-    dedicated close button: a click anywhere inside dismisses it.
-    """
-    window = sg.Window(
-        "卡牌预览",
-        [[sg.Image(data=image_data, background_color=COLOR_PAPER)]],
-        modal=True,
-        finalize=True,
-        keep_on_top=True,
-        background_color=COLOR_PAPER,
-    )
-    _force_visible_centered(window, parent_window)
-    _bind_dismiss_on_click(window)
-    try:
-        while True:
-            event, _values = window.read()
-            if event in (sg.WIN_CLOSED, "-DISMISS-"):
-                return
-    finally:
-        window.close()
-
-
-def _force_visible_centered(window, parent_window) -> None:
-    """Map, center on parent (or screen), and force the popup to the foreground."""
-    root = window.TKroot
-    parent = parent_window.TKroot if parent_window is not None else None
-    try:
-        root.update_idletasks()
-        if parent is not None:
-            parent.update_idletasks()
-        root.deiconify()  # ensure the window is mapped (not withdrawn/iconic)
-        w = max(1, root.winfo_width())
-        h = max(1, root.winfo_height())
-        if parent is not None:
-            px = parent.winfo_rootx()
-            py = parent.winfo_rooty()
-            pw = max(1, parent.winfo_width())
-            ph = max(1, parent.winfo_height())
-            x = max(0, px + (pw - w) // 2)
-            y = max(0, py + (ph - h) // 2)
-        else:
-            sw = root.winfo_screenwidth()
-            sh = root.winfo_screenheight()
-            x = max(0, (sw - w) // 2)
-            y = max(0, (sh - h) // 2)
-        root.geometry(f"+{x}+{y}")
-        root.lift()
-        root.attributes("-topmost", 1)
-        root.focus_force()
-    except Exception:
-        return
-
-
-def _bind_dismiss_on_click(window) -> None:
-    """Dismiss the popup on any left or right click inside it."""
-    dismiss = lambda _e: window.write_event_value("-DISMISS-", "")
-    window.TKroot.bind("<Button-1>", dismiss)
-    window.TKroot.bind("<Button-3>", dismiss)
-
-
 def bind_hand_card_events(window) -> None:
     """Make right-click events distinguishable from ordinary card clicks."""
     for index in range(MAX_HAND_BUTTONS):
         try:
-            window[f"-BTN{index}-"].bind("<Button-3>", RIGHT_CLICK_SUFFIX)
+            element = window[f"-BTN{index}-"]
+            element.bind("<Button-3>", RIGHT_CLICK_SUFFIX)
+            widget = element.Widget
+            widget.configure(cursor="hand2", relief="flat")
+            widget.bind("<Enter>", _hover_enter, add="+")
+            widget.bind("<Leave>", _hover_leave, add="+")
         except (KeyError, AttributeError, RuntimeError):
             continue
 
@@ -127,11 +58,13 @@ def route_hand_card_event(session, event) -> tuple[str, int] | None:
     if session.armed_hand_index == index:
         _mark_armed(session, index, False)
         session.armed_hand_index = None
+        _set_card_hint(session, "卡牌已确认，正在结算……")
         return "confirmed", index
     if session.armed_hand_index is not None:
         _mark_armed(session, session.armed_hand_index, False)
     session.armed_hand_index = index
     _mark_armed(session, index, True)
+    _set_card_hint(session, "卡牌已抬起 · 再次左键确认 · 右键放大预览")
     return "armed", index
 
 
@@ -139,13 +72,148 @@ def clear_armed_card(session) -> None:
     if session.armed_hand_index is not None:
         _mark_armed(session, session.armed_hand_index, False)
     session.armed_hand_index = None
+    _set_card_hint(session, "左键一次选中，再次确认 · 右键放大预览")
 
 
 def preview_hand_card(session, hand_index: int) -> None:
     card_id = session.state.hand_cards[hand_index]
-    show_dismissable_preview(
-        _enlarge(session.card_images[card_id]), session.require_window()
+    open_card_preview(session, session.card_images[card_id])
+
+
+def open_card_preview(session, image_data: bytes, parent=None) -> None:
+    """Create a preview and return immediately; the main loop drives it.
+
+    按住右键放大预览，松开右键即消失。
+    """
+    close_card_preview(session)
+    window = sg.Window(
+        "卡牌预览",
+        [
+            [
+                sg.Text(
+                    "卡牌详情",
+                    font=FONT_BODY_BOLD,
+                    text_color=COLOR_PAPER,
+                    background_color=COLOR_INK,
+                    expand_x=True,
+                    justification="center",
+                )
+            ],
+            [
+                sg.Image(
+                    data=enlarged_card_image(image_data),
+                    key="-PREVIEW-CARD-",
+                    background_color=COLOR_INK,
+                    pad=(18, 12),
+                )
+            ],
+            [
+                sg.Text(
+                    "松开右键关闭 · 不会暂停联机对局",
+                    font=FONT_BODY,
+                    text_color=COLOR_MUTED,
+                    background_color=COLOR_INK,
+                    expand_x=True,
+                    justification="center",
+                )
+            ],
+        ],
+        finalize=True,
+        keep_on_top=True,
+        no_titlebar=True,
+        background_color=COLOR_INK,
+        element_justification="center",
+        margins=(12, 12),
     )
+    window.bind("<Escape>", "-CLOSE-")
+    window.TKroot.attributes("-topmost", 1)
+    # 全局绑定：松开右键 0.4 秒后关闭预览（无论鼠标在哪个窗口上）
+    def _close_on_release(_event):
+        def _delayed_close():
+            if getattr(session, "preview_window", None) is window:
+                close_card_preview(session)
+        window.TKroot.after(400, _delayed_close)
+    window.TKroot.bind_all("<ButtonRelease-3>", _close_on_release, add="+")
+    session._preview_release_handler = _close_on_release
+    session.preview_window = window
+    try:
+        parent = parent or session.require_window()
+        window.TKroot.transient(parent.TKroot)
+        window.TKroot.lift()
+        window.TKroot.focus_force()
+        window.TKroot.update_idletasks()
+        x = (
+            parent.TKroot.winfo_rootx()
+            + (parent.TKroot.winfo_width() - window.TKroot.winfo_width()) // 2
+        )
+        y = (
+            parent.TKroot.winfo_rooty()
+            + (parent.TKroot.winfo_height() - window.TKroot.winfo_height()) // 2
+        )
+        window.move(max(0, x), max(0, y))
+    except Exception:
+        pass
+
+
+def poll_card_preview(session) -> None:
+    """Process at most one preview event without delaying network I/O."""
+    window = getattr(session, "preview_window", None)
+    if window is None:
+        return
+    try:
+        event, _values = window.read(timeout=0)
+    except Exception:
+        close_card_preview(session)
+        return
+    # Escape 或窗口关闭事件
+    if event in (sg.WIN_CLOSED, "-CLOSE-"):
+        close_card_preview(session)
+
+
+def close_card_preview(session) -> None:
+    window = getattr(session, "preview_window", None)
+    if window is not None:
+        # 解除全局 ButtonRelease-3 绑定
+        try:
+            window.TKroot.unbind_all("<ButtonRelease-3>")
+        except Exception:
+            pass
+    if hasattr(session, "_preview_release_handler"):
+        session._preview_release_handler = None
+    if hasattr(session, "preview_window"):
+        session.preview_window = None
+    if window is not None:
+        try:
+            window.close()
+        except Exception:
+            return
+
+
+def _force_visible_centered(window, parent=None) -> None:
+    """Force a modal/popup window to be visible, centered, and on top."""
+    try:
+        window.TKroot.deiconify()
+        window.TKroot.update_idletasks()
+        if parent is not None and getattr(parent, "TKroot", None) is not None:
+            x = parent.TKroot.winfo_rootx() + (
+                parent.TKroot.winfo_width() - window.TKroot.winfo_width()
+            ) // 2
+            y = parent.TKroot.winfo_rooty() + (
+                parent.TKroot.winfo_height() - window.TKroot.winfo_height()
+            ) // 2
+        else:
+            screen_w = window.TKroot.winfo_screenwidth()
+            screen_h = window.TKroot.winfo_screenheight()
+            win_w = window.TKroot.winfo_width()
+            win_h = window.TKroot.winfo_height()
+            x = max(0, (screen_w - win_w) // 2)
+            y = max(0, (screen_h - win_h) // 2)
+        window.TKroot.geometry(f"+{max(0, int(x))}+{max(0, int(y))}")
+        window.TKroot.lift()
+        window.TKroot.attributes("-topmost", 1)
+        window.TKroot.focus_force()
+    except Exception:
+        return
 
 
 def _mark_armed(session, hand_index: int, armed: bool) -> None:
@@ -157,13 +225,60 @@ def _mark_armed(session, hand_index: int, armed: bool) -> None:
             session.require_window(),
             session.card_images,
         )
+        try:
+            widget = session.require_window()[f"-BTN{hand_index}-"].Widget
+            widget._card_armed = False
+            _set_card_spacing(widget, False)
+            widget.configure(relief="flat", borderwidth=1)
+        except Exception:
+            pass
         return
     try:
         widget = session.require_window()[f"-BTN{hand_index}-"].Widget
+        widget._card_armed = True
+        _set_card_spacing(widget, True)
         widget.configure(
             highlightthickness=6,
             highlightbackground=COLOR_BLUE,
             highlightcolor=COLOR_BLUE,
+            relief="raised",
+            borderwidth=4,
         )
-    except (KeyError, AttributeError, RuntimeError):
+    except Exception:
         return
+
+
+def _hover_enter(event) -> None:
+    widget = event.widget
+    if getattr(widget, "_card_armed", False):
+        return
+    try:
+        widget.configure(relief="raised", borderwidth=3)
+    except Exception:
+        return
+
+
+def _hover_leave(event) -> None:
+    widget = event.widget
+    if getattr(widget, "_card_armed", False):
+        return
+    try:
+        widget.configure(relief="flat", borderwidth=1)
+    except Exception:
+        return
+
+
+def _set_card_hint(session, text: str) -> None:
+    try:
+        session.require_window()["-CARD-HINT-"].update(text)
+    except Exception:
+        return
+
+
+def _set_card_spacing(widget, armed: bool) -> None:
+    """Lift a card using the geometry manager chosen by FreeSimpleGUI."""
+    manager = widget.winfo_manager()
+    if manager == "pack":
+        widget.pack_configure(pady=7 if armed else 0)
+    elif manager == "grid":
+        widget.grid_configure(pady=(0, 14) if armed else (0, 0))

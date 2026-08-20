@@ -5,6 +5,7 @@ import FreeSimpleGUI as sg
 from card_duel.ui.deck_viewer import (
     DECK_VIEW_KEY_DRAW,
     DECK_VIEW_KEY_DISCARD,
+    build_deck_viewer_panel,
 )
 from card_duel.ui.network_style import (
     CHAT_INPUT_KEY,
@@ -62,7 +63,7 @@ def _build_status_card(title, accent, key_prefix, paper=COLOR_PAPER):
                 font=FONT_HEADING,
                 text_color=accent,
                 background_color=paper,
-                size=(13, 1),
+                size=(8, 1),
             ),
             sg.Text(
                 "HP",
@@ -107,9 +108,9 @@ def _build_status_card(title, accent, key_prefix, paper=COLOR_PAPER):
                 "0",
                 key=defence_key,
                 font=FONT_BODY_BOLD,
-                text_color=COLOR_INK,
+                text_color=COLOR_BLUE,
                 background_color=paper,
-                size=(6, 1),
+                size=(4, 1),
             ),
             sg.Text(
                 "力量",
@@ -122,9 +123,9 @@ def _build_status_card(title, accent, key_prefix, paper=COLOR_PAPER):
                 "0",
                 key=strength_key,
                 font=FONT_BODY_BOLD,
-                text_color=COLOR_INK,
+                text_color=COLOR_BLUE,
                 background_color=paper,
-                size=(5, 1),
+                size=(4, 1),
             ),
         ],
         [
@@ -146,7 +147,6 @@ def _build_status_card(title, accent, key_prefix, paper=COLOR_PAPER):
         relief=sg.RELIEF_SOLID,
         pad=(3, 3),
         element_justification="left",
-        expand_y=True,
     )
 
 
@@ -233,12 +233,8 @@ def create_main_layout(card_images, hand_cards):
         element_justification="center",
     )
 
-    opponent_status = _build_status_card(
-        "对手", COLOR_RED, "EN", paper=COLOR_PAPER_OPPONENT
-    )
-    local_status = _build_status_card(
-        "我方", COLOR_GREEN, "MY", paper=COLOR_PAPER_LOCAL
-    )
+    opponent_status = _build_status_card("对手", COLOR_RED, "EN", paper=COLOR_PAPER_OPPONENT)
+    local_status = _build_status_card("我方", COLOR_GREEN, "MY", paper=COLOR_PAPER_LOCAL)
 
     log_panel = sg.Frame(
         " 战斗记录 / NOTES ",
@@ -297,7 +293,7 @@ def create_main_layout(card_images, hand_cards):
     )
 
     last_played_panel = sg.Frame(
-        " 最近出牌 ",
+        " 上次出牌 ",
         [
             [
                 sg.Image(
@@ -314,9 +310,10 @@ def create_main_layout(card_images, hand_cards):
                     text_color=COLOR_MUTED,
                     background_color=COLOR_PAPER,
                     justification="center",
-                    size=(20, 1),
+                    size=(20, 2),
                 )
             ],
+            [sg.Text("", background_color=COLOR_PAPER, expand_y=True)],
         ],
         font=FONT_BODY_BOLD,
         title_color=COLOR_INK,
@@ -324,7 +321,6 @@ def create_main_layout(card_images, hand_cards):
         relief=sg.RELIEF_SOLID,
         border_width=1,
         element_justification="center",
-        vertical_alignment="top",
         expand_y=True,
         pad=(1, 1),
     )
@@ -341,22 +337,6 @@ def create_main_layout(card_images, hand_cards):
                     background_color=COLOR_PAPER,
                     expand_x=True,
                 ),
-                sg.Button(
-                    "牌堆\n0",
-                    key=DECK_VIEW_KEY_DRAW,
-                    size=(6, 1),
-                    font=FONT_BODY_BOLD,
-                    button_color=(COLOR_INK, COLOR_PAPER_DARK),
-                    border_width=1,
-                ),
-                sg.Button(
-                    "弃牌\n0",
-                    key=DECK_VIEW_KEY_DISCARD,
-                    size=(6, 1),
-                    font=FONT_BODY_BOLD,
-                    button_color=(COLOR_MUTED, COLOR_PAPER_DARK),
-                    border_width=1,
-                ),
                 sg.Text(
                     "手牌",
                     font=FONT_BODY,
@@ -370,6 +350,20 @@ def create_main_layout(card_images, hand_cards):
                     text_color=COLOR_GREEN,
                     background_color=COLOR_PAPER,
                     size=(4, 1),
+                ),
+                sg.Button(
+                    "查看抽牌堆",
+                    key=DECK_VIEW_KEY_DRAW,
+                    font=FONT_BODY_BOLD,
+                    button_color=(COLOR_INK, COLOR_PAPER_DARK),
+                    border_width=1,
+                ),
+                sg.Button(
+                    "查看弃牌堆",
+                    key=DECK_VIEW_KEY_DISCARD,
+                    font=FONT_BODY_BOLD,
+                    button_color=(COLOR_INK, COLOR_PAPER_DARK),
+                    border_width=1,
                 ),
                 sg.Button(
                     "完成当前阶段  →",
@@ -395,10 +389,10 @@ def create_main_layout(card_images, hand_cards):
         [phase_tracker],
         [
             sg.Column(
-                [[opponent_status], [local_status]],
+                [[opponent_status], [local_status], [sg.Text("", background_color=COLOR_BACKGROUND, expand_y=True)]],
                 background_color=COLOR_BACKGROUND,
                 vertical_alignment="top",
-                pad=(0, 0),
+                pad=(1, 0),
                 expand_y=True,
             ),
             sg.Column(
@@ -419,15 +413,14 @@ def create_main_layout(card_images, hand_cards):
         ],
         [card_panel],
     ]
-    return [
-        [
-            sg.Column(
-                content,
-                background_color=COLOR_BACKGROUND,
-                expand_x=True,
-                expand_y=True,
-                pad=(10, 6),
-                key="-ROOT-COL-",
-            )
-        ]
-    ]
+    game_panel = sg.Column(
+        content,
+        background_color=COLOR_BACKGROUND,
+        expand_x=True,
+        expand_y=True,
+        pad=(10, 6),
+        key="-ROOT-COL-",
+    )
+    # The deck browser shares the main window, so it cannot be hidden behind it.
+    deck_panel = build_deck_viewer_panel(card_images)
+    return [[game_panel, deck_panel]]
