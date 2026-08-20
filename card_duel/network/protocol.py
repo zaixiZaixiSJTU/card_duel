@@ -12,7 +12,12 @@ import FreeSimpleGUI as sg
 
 from card_duel.core.models import DefenceEffect
 from card_duel.network.transport import receive_json, send_json
-from card_duel.ui.deck_viewer import DECK_VIEW_KEY, open_deck_viewer
+from card_duel.ui.card_interaction import parse_hand_card_event, preview_hand_card
+from card_duel.ui.deck_viewer import (
+    DECK_VIEW_KEY_DISCARD,
+    DECK_VIEW_KEY_DRAW,
+    open_deck_viewer,
+)
 from card_duel.ui.network_log import append_log
 from card_duel.ui.network_style import CHAT_INPUT_KEY, CHAT_SEND_KEY
 from card_duel.ui.network_view import refresh_status, show_played_card
@@ -53,8 +58,20 @@ def _receive_bytes_with_ui(
             if allow_chat and event == CHAT_SEND_KEY:
                 send_chat_message(session, values.get(CHAT_INPUT_KEY, ""))
                 continue
-            if event == DECK_VIEW_KEY:
-                open_deck_viewer(session)
+            if event == DECK_VIEW_KEY_DRAW:
+                open_deck_viewer(session, mode="draw")
+                continue
+            if event == DECK_VIEW_KEY_DISCARD:
+                open_deck_viewer(session, mode="discard")
+                continue
+            # Waiting player may still inspect their own hand (right-click
+            # preview). Left-clicks are ignored so they can't arm/play out
+            # of turn.
+            parsed = parse_hand_card_event(event)
+            if parsed is not None:
+                index, preview = parsed
+                if preview and index < len(session.state.hand_cards):
+                    preview_hand_card(session, index)
                 continue
             try:
                 return connection.recv(byte_count)
@@ -276,17 +293,25 @@ def _apply_local_pending_actions(session) -> None:
 
     if statuses.pending_draw_returns:
         if state.character_ids.get(player_id) == 4:
-            from card_duel.cards.slugcat.specs import SLUGCAT_DISCOVERY_IDS
+            from card_duel.cards.slugcat.specs import (
+                SLUGCAT_CREATURE_IDS,
+                SLUGCAT_DISCOVERY_IDS,
+            )
             from card_duel.cards.slugcat.state import slugcat_data
 
             data = slugcat_data(player)
             for card_id in statuses.pending_draw_returns:
                 if card_id in SLUGCAT_DISCOVERY_IDS:
                     data.discovery_pool.append(card_id)
+                elif card_id in SLUGCAT_CREATURE_IDS:
+                    # 生物牌不进抽牌堆循环，返还到 unlocked_creature_counts
+                    data.unlocked_creature_counts[card_id] = (
+                        data.unlocked_creature_counts.get(card_id, 0) + 1
+                    )
                 else:
-                    state.draw_pile.append(card_id)
+                    state.discard_pile.append(card_id)
         else:
-            state.draw_pile.extend(statuses.pending_draw_returns)
+            state.discard_pile.extend(statuses.pending_draw_returns)
         statuses.pending_draw_returns.clear()
 
     if statuses.pending_discards:

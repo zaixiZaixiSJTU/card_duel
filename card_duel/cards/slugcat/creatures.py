@@ -271,7 +271,13 @@ def on_creature_death(
     if state.character_ids.get(creature.owner_id) != SLUGCAT_CHARACTER_ID:
         return
     if creature.owner_id == state.local_player_id:
-        state.draw_pile.append(card_id)
+        # 生物牌不进抽牌堆循环，返还到 unlocked_creature_counts 等待下次猫闯祸召唤
+        from card_duel.cards.slugcat.state import slugcat_data
+
+        data = slugcat_data(state.players[creature.owner_id])
+        data.unlocked_creature_counts[card_id] = (
+            data.unlocked_creature_counts.get(card_id, 0) + 1
+        )
     else:
         state.players[creature.owner_id].statuses.pending_draw_returns.append(card_id)
 

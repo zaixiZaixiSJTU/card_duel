@@ -168,7 +168,7 @@ def _return_discarded_card(state, player_id: int, card_id: int) -> None:
     ):
         slugcat_data(state.players[player_id]).discovery_pool.append(card_id)
     else:
-        state.draw_pile.append(card_id)
+        state.discard_pile.append(card_id)
 
 
 def _apply_electric_penalty(player, player_id: int, announce) -> None:
@@ -239,7 +239,11 @@ def _resolve_creatures(context, combat) -> None:
             removed = remove_hand_creature(state, player_id, 23)
             if removed is not None:
                 if removed.owner_id == state.local_player_id:
-                    state.draw_pile.append(23)
+                    # 烈焰蜥蜴返还到 unlocked_creature_counts 等待下次召唤
+                    data = slugcat_data(state.players[removed.owner_id])
+                    data.unlocked_creature_counts[23] = (
+                        data.unlocked_creature_counts.get(23, 0) + 1
+                    )
                 else:
                     state.players[
                         removed.owner_id

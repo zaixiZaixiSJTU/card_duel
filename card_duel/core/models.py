@@ -121,6 +121,7 @@ class GameState:
     )
     hand_cards: list[CardId] = field(default_factory=list)
     draw_pile: list[CardId] = field(default_factory=list)
+    discard_pile: list[CardId] = field(default_factory=list)
     timeline: list[ScheduledEvent] = field(default_factory=list)
     character_ids: dict[PlayerId, int | None] = field(
         default_factory=lambda: {1: None, 2: None}

@@ -13,7 +13,6 @@ from card_duel.ui.network_style import (
     COLOR_MUTED,
     COLOR_PAPER,
     COLOR_RED,
-    MAX_ENERGY_ORBS,
     MAX_HAND_BUTTONS,
     MAX_HEALTH_DISPLAY,
     PHASE_LABELS,
@@ -57,7 +56,16 @@ def refresh_status(game_state, window, registry, snapshots=None):
         snapshots[game_state.opponent_player_id] = _player_value_snapshot(
             opponent_player, game_state.opponent_character_id
         )
-    _safe_update(window, "-DECK-COUNT-", str(len(game_state.draw_pile)))
+    _safe_update(
+        window,
+        "-DECK-VIEW-DRAW-",
+        button_text=f"牌堆\n{len(game_state.draw_pile)}",
+    )
+    _safe_update(
+        window,
+        "-DECK-VIEW-DISCARD-",
+        button_text=f"弃牌\n{len(game_state.discard_pile)}",
+    )
     hand_count = str(game_state.hand_size)
     if game_state.local_character_id == 4:
         from card_duel.cards.slugcat.hand import effective_hand_size
@@ -95,7 +103,6 @@ def _update_player_status(
     _safe_update(
         window, f"-{key_prefix}-HP-BAR-", max(0, min(MAX_HEALTH_DISPLAY, player.health))
     )
-    _safe_update(window, f"-{key_prefix}-ORB-", _format_energy_orbs(player.energy))
     _safe_update(window, f"-{key_prefix}-SPECIAL-", character_status)
 
 
@@ -216,15 +223,22 @@ def set_cards_enabled(window, enabled):
 
 
 def show_played_card(session, player_id: int, character_id: int, card_id: int) -> None:
-    """Show the latest played card in the correct public player panel."""
+    """Show the latest played card in the shared panel to the right of the log."""
     from card_duel.core.resources import render_card
 
     definition = session.registry.get_card(character_id, card_id)
-    prefix = "MY" if player_id == session.state.local_player_id else "EN"
+    window = session.require_window()
     _safe_update(
-        session.require_window(),
-        f"-{prefix}-PLAYED-",
-        data=_thumbnail(render_card(definition)),
+        window,
+        "-LAST-PLAYED-",
+        data=_resized_card(render_card(definition), (200, 300)),
+    )
+    who = "我方" if player_id == session.state.local_player_id else "对手"
+    _safe_update(
+        window,
+        "-LAST-PLAYED-HINT-",
+        f"{who}打出 {definition.name}",
+        text_color=COLOR_INK,
     )
 
 
@@ -267,6 +281,16 @@ def _thumbnail(image_data: bytes, size=(64, 96)) -> bytes:
     return base64.b64encode(buffer.getvalue())
 
 
+def _resized_card(image_data: bytes, size=(200, 300)) -> bytes:
+    """Resize a card image to the exact target size (also upscales)."""
+    raw = base64.b64decode(image_data)
+    with Image.open(io.BytesIO(raw)) as image:
+        resized = image.resize(size, Image.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        resized.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue())
+
+
 def _safe_update(window, key, *args, **kwargs) -> bool:
     """Avoid crashing when a Tk element disappears during socket shutdown."""
     try:
@@ -281,8 +305,3 @@ def _safe_refresh(window) -> None:
         window.refresh()
     except Exception:
         return
-
-
-def _format_energy_orbs(value):
-    filled = max(0, min(value, MAX_ENERGY_ORBS))
-    return "●" * filled + "○" * (MAX_ENERGY_ORBS - filled)

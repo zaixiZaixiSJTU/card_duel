@@ -31,3 +31,6 @@ output/
 # Operating-system files
 .DS_Store
 Thumbs.db
+
+# Local vendored dependencies (used only for running tests in restricted envs)
+_vendor/

@@ -200,7 +200,7 @@ class ArchitectureTests(unittest.TestCase):
 
         self.assertTrue(played)
         self.assertEqual(state.hand_cards, [16])
-        self.assertEqual(state.draw_pile, [1, 2])
+        self.assertEqual(state.discard_pile, [1, 2])
         self.assertEqual(state.players[2].health, 26)
 
     def test_ignore_cost_does_not_create_negative_energy(self):

@@ -79,7 +79,7 @@ class UiLogicTests(unittest.TestCase):
         self.assertEqual(groups["物品"][1], 2)
         self.assertEqual(groups["技能"][6], 1)
         self.assertEqual(groups["见闻牌堆"], {27: 1, 28: 1})
-        self.assertEqual(groups["已解锁生物（不可抽取）"], {16: 2, 20: 3})
+        self.assertEqual(groups["可召唤生物（不进牌堆）"], {16: 2, 20: 3})
 
     def test_log_colors_distinguish_chat_damage_and_draws(self):
         self.assertEqual(classify_log_color("[我] 你好"), COLOR_BLUE)

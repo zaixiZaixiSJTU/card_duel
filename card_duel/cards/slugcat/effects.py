@@ -285,8 +285,17 @@ def trouble(context):
     if not _pay_cost(context, 15):
         return False
     data = slugcat_data(context.source)
-    pool = list(data.unlocked_creature_counts) or [16, 20, 25]
-    creature_id = random.choice(pool)
+    # 按 unlocked_creature_counts 加权随机：count 即为可召唤数量，召唤后 -1，减到 0 删除
+    if data.unlocked_creature_counts:
+        pool_ids = list(data.unlocked_creature_counts.keys())
+        weights = [data.unlocked_creature_counts[cid] for cid in pool_ids]
+        creature_id = random.choices(pool_ids, weights=weights, k=1)[0]
+        data.unlocked_creature_counts[creature_id] -= 1
+        if data.unlocked_creature_counts[creature_id] <= 0:
+            del data.unlocked_creature_counts[creature_id]
+    else:
+        # 空池 fallback：仍按场景默认生物种类随机一次（不计入 unlocked_creature_counts）
+        creature_id = random.choice([16, 20, 25])
     destination = (
         context.target_player_id
         if data.redirect_creatures_to_opponent
@@ -352,6 +361,13 @@ def _discovery(card_id: int):
             item
             for item in context.state.draw_pile
             if SLUGCAT_SPECS_BY_ID[item].card_type != "物品"
+        ]
+        # Scene change also retires non-item cards sitting in the discard pile
+        # so they cannot cycle back into the new scene on the next reshuffle.
+        context.state.discard_pile[:] = [
+            item
+            for item in context.state.discard_pile
+            if SLUGCAT_SPECS_BY_ID[item].card_type == "物品"
         ]
         data.unlocked_creature_counts.clear()
         for new_card_id, count in DISCOVERY_CONTENTS[card_id].items():

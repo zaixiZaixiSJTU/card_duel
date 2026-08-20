@@ -25,7 +25,9 @@ SLUGCAT_CARD_SPECS = (
         1, "一根钢筋", "物品", 20, 1, "造成2点伤害并转换动能；穿透时插入目标。"
     ),
     SlugcatCardSpec(2, "一块石子", "物品", 10, 0, "造成1点伤害并转换动能。"),
-    SlugcatCardSpec(3, "炸药", "物品", 3, 1, "造成10点伤害，随后自己受到5点伤害。"),
+    SlugcatCardSpec(
+        3, "炸药", "物品", 3, 1, "造成10点伤害，随后自己受到5点伤害。", exhausted=True
+    ),
     SlugcatCardSpec(
         4,
         "炸矛",
@@ -33,6 +35,7 @@ SLUGCAT_CARD_SPECS = (
         3,
         2,
         "造成3点伤害并转换动能；穿透时额外失去10点生命并弃1张牌。",
+        exhausted=True,
     ),
     SlugcatCardSpec(
         5,
@@ -41,6 +44,7 @@ SLUGCAT_CARD_SPECS = (
         1,
         2,
         "造成3点伤害并转换动能；穿透时插入，每回合开始力量-2/根。",
+        exhausted=True,
     ),
     SlugcatCardSpec(
         6, "猫猫小跳", "技能", 6, 0, "获得1点敏捷；下一张矛或石子再获得1点敏捷。"

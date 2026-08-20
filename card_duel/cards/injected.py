@@ -43,7 +43,7 @@ def handler_for(card_id: int):
             item_name = "电矛"
 
         if item.owner_id == context.state.local_player_id:
-            context.state.draw_pile.append(normal_card_id)
+            context.state.discard_pile.append(normal_card_id)
         else:
             context.state.players[item.owner_id].statuses.pending_draw_returns.append(
                 normal_card_id

@@ -2,7 +2,12 @@
 
 from card_duel.cards.warrior.state import warrior_data
 from card_duel.core.models import ScheduledEvent
-from card_duel.core.rules import add_defence, draw_cards, schedule_event
+from card_duel.core.rules import (
+    add_defence,
+    draw_cards,
+    reshuffle_discard_into_draw,
+    schedule_event,
+)
 
 
 def _spend(context, cost: int) -> bool:
@@ -28,7 +33,7 @@ def _discard_cards(context, title: str, count: int, excluded_card_id: int) -> bo
     discarded = [context.state.hand_cards[index] for index in indexes]
     for index in sorted(indexes, reverse=True):
         context.state.hand_cards.pop(index)
-    context.state.draw_pile.extend(discarded)
+    context.state.discard_pile.extend(discarded)
     return True
 
 
@@ -186,13 +191,18 @@ def heartlink(context):
 
 
 def black_flash(context):
-    if not context.state.draw_pile or not _spend(context, 2):
+    if not context.state.draw_pile and not context.state.discard_pile:
+        context.announce("牌堆已空，无法发动黑闪")
         return False
+    if not _spend(context, 2):
+        return False
+    if not context.state.draw_pile:
+        reshuffle_discard_into_draw(context.state)
     card_id = context.state.draw_pile.pop(0)
     context.announce("黑闪！")
     context.play_card(card_id, ignore_cost=True)
     if card_id not in (10, 13):
-        context.state.draw_pile.append(card_id)
+        context.state.discard_pile.append(card_id)
     return True
 
 

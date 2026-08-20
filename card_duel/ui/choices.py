@@ -23,15 +23,22 @@ class GuiChoiceProvider:
             return None
 
     def choose_option(self, title, prompt, options, default):
+        from card_duel.ui.card_interaction import _force_visible_centered
+
         layout = [[sg.Text(prompt)]] + [
             [sg.Button(option, key=option)] for option in options
         ]
-        window = sg.Window(title, layout, modal=True, keep_on_top=True)
+        window = sg.Window(
+            title, layout, modal=True, keep_on_top=True, finalize=True
+        )
+        _force_visible_centered(window, None)
         event, _ = window.read()
         window.close()
         return event if event in options else None
 
     def choose_card_indexes(self, title, hand, count, excluded_card_id=None):
+        from card_duel.ui.card_interaction import _force_visible_centered
+
         if count == 0:
             return []
         buttons = []
@@ -51,6 +58,7 @@ class GuiChoiceProvider:
             [sg.Text("已选择 0 张", key="-COUNT-")],
         ]
         window = sg.Window(title, layout, modal=True, keep_on_top=True, finalize=True)
+        _force_visible_centered(window, None)
         selected: list[int] = []
         while len(selected) < count:
             event, _ = window.read()

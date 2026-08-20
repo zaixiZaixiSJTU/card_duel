@@ -115,7 +115,8 @@ class ProtocolTests(unittest.TestCase):
         _apply_local_pending_actions(session)
 
         self.assertEqual(state.hand_cards, [49])
-        self.assertEqual(state.draw_pile, [1, 6])
+        self.assertEqual(state.discard_pile, [1, 6])
+        self.assertEqual(state.draw_pile, [])
         slugcat_data = state.players[1].character_data
         self.assertIsInstance(slugcat_data, SlugcatData)
         self.assertEqual(slugcat_data.discovery_pool, [27, 27])

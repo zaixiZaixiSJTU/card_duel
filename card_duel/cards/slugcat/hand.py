@@ -21,7 +21,14 @@ def effective_hand_size(state, player_id: int) -> int:
 
 
 def draw_non_creatures(state, amount: int) -> int:
-    """Draw normal cards while leaving creature cards in the pile."""
+    """Draw normal cards while leaving creature cards in the pile.
+
+    When no eligible card sits on top of the draw pile, the discard pile is
+    shuffled in (Slay-the-Spire style) before giving up, so that draws keep
+    their per-round randomness instead of being blocked by an empty pile.
+    """
+    from card_duel.core.rules import reshuffle_discard_into_draw
+
     drawn = 0
     while drawn < max(0, amount):
         index = next(
@@ -32,6 +39,16 @@ def draw_non_creatures(state, amount: int) -> int:
             ),
             None,
         )
+        if index is None and state.discard_pile:
+            reshuffle_discard_into_draw(state)
+            index = next(
+                (
+                    index
+                    for index, card_id in enumerate(state.draw_pile)
+                    if card_id not in SLUGCAT_CREATURE_IDS
+                ),
+                None,
+            )
         if index is None:
             break
         state.hand_cards.append(state.draw_pile.pop(index))

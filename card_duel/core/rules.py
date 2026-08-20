@@ -54,8 +54,34 @@ def add_card_to_hand(game_state: GameState, card_id: int) -> None:
     game_state.hand_cards.append(card_id)
 
 
+def reshuffle_discard_into_draw(game_state: GameState) -> bool:
+    """Move every card from the discard pile into the draw pile and shuffle.
+
+    Implements the Slay-the-Spire cycle: when the draw pile cannot satisfy a
+    draw, the discard pile is shuffled in to refresh it. Returns ``True`` if
+    any cards were moved.
+    """
+    if not game_state.discard_pile:
+        return False
+    game_state.draw_pile.extend(game_state.discard_pile)
+    game_state.discard_pile.clear()
+    random.shuffle(game_state.draw_pile)
+    return True
+
+
 def draw_cards(game_state: GameState, amount: int) -> int:
-    drawn = min(max(0, amount), len(game_state.draw_pile))
-    game_state.hand_cards.extend(game_state.draw_pile[:drawn])
-    del game_state.draw_pile[:drawn]
+    """Draw ``amount`` cards from the top of the draw pile.
+
+    When the draw pile runs out, the discard pile is shuffled in to form a
+    fresh draw pile (Slay-the-Spire style) so that each round's draw order is
+    not fixed. Returns the number of cards actually drawn.
+    """
+    drawn = 0
+    while drawn < amount:
+        if not game_state.draw_pile:
+            reshuffle_discard_into_draw(game_state)
+            if not game_state.draw_pile:
+                break  # Both piles exhausted.
+        game_state.hand_cards.append(game_state.draw_pile.pop(0))
+        drawn += 1
     return drawn

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import io
+
 import FreeSimpleGUI as sg
 
 from card_duel.ui.network_style import (
@@ -11,6 +14,83 @@ from card_duel.ui.network_style import (
 )
 
 RIGHT_CLICK_SUFFIX = " RIGHT"
+
+
+def _enlarge(image_data: bytes, scale: float = 1.5) -> bytes:
+    """Upscale a card image so the preview is larger than the original."""
+    from PIL import Image
+
+    raw = base64.b64decode(image_data)
+    with Image.open(io.BytesIO(raw)) as image:
+        target = (int(image.width * scale), int(image.height * scale))
+        resized = image.resize(target, Image.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        resized.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue())
+
+
+def show_dismissable_preview(image_data: bytes, parent_window) -> None:
+    """Show a large always-on-top preview that closes on any click.
+
+    Fixes the "popup invisible until maximize" bug by explicitly mapping the
+    window (deiconify), centering it on the parent, and forcing topmost. No
+    dedicated close button: a click anywhere inside dismisses it.
+    """
+    window = sg.Window(
+        "卡牌预览",
+        [[sg.Image(data=image_data, background_color=COLOR_PAPER)]],
+        modal=True,
+        finalize=True,
+        keep_on_top=True,
+        background_color=COLOR_PAPER,
+    )
+    _force_visible_centered(window, parent_window)
+    _bind_dismiss_on_click(window)
+    try:
+        while True:
+            event, _values = window.read()
+            if event in (sg.WIN_CLOSED, "-DISMISS-"):
+                return
+    finally:
+        window.close()
+
+
+def _force_visible_centered(window, parent_window) -> None:
+    """Map, center on parent (or screen), and force the popup to the foreground."""
+    root = window.TKroot
+    parent = parent_window.TKroot if parent_window is not None else None
+    try:
+        root.update_idletasks()
+        if parent is not None:
+            parent.update_idletasks()
+        root.deiconify()  # ensure the window is mapped (not withdrawn/iconic)
+        w = max(1, root.winfo_width())
+        h = max(1, root.winfo_height())
+        if parent is not None:
+            px = parent.winfo_rootx()
+            py = parent.winfo_rooty()
+            pw = max(1, parent.winfo_width())
+            ph = max(1, parent.winfo_height())
+            x = max(0, px + (pw - w) // 2)
+            y = max(0, py + (ph - h) // 2)
+        else:
+            sw = root.winfo_screenwidth()
+            sh = root.winfo_screenheight()
+            x = max(0, (sw - w) // 2)
+            y = max(0, (sh - h) // 2)
+        root.geometry(f"+{x}+{y}")
+        root.lift()
+        root.attributes("-topmost", 1)
+        root.focus_force()
+    except Exception:
+        return
+
+
+def _bind_dismiss_on_click(window) -> None:
+    """Dismiss the popup on any left or right click inside it."""
+    dismiss = lambda _e: window.write_event_value("-DISMISS-", "")
+    window.TKroot.bind("<Button-1>", dismiss)
+    window.TKroot.bind("<Button-3>", dismiss)
 
 
 def bind_hand_card_events(window) -> None:
@@ -63,31 +143,9 @@ def clear_armed_card(session) -> None:
 
 def preview_hand_card(session, hand_index: int) -> None:
     card_id = session.state.hand_cards[hand_index]
-    image = session.card_images[card_id]
-    window = sg.Window(
-        "卡牌预览",
-        [
-            [sg.Image(data=image, background_color=COLOR_PAPER)],
-            [sg.Button("关闭", key="-CLOSE-", bind_return_key=True)],
-        ],
-        modal=True,
-        finalize=True,
-        keep_on_top=True,
-        background_color=COLOR_PAPER,
+    show_dismissable_preview(
+        _enlarge(session.card_images[card_id]), session.require_window()
     )
-    try:
-        window.TKroot.transient(session.require_window().TKroot)
-        window.TKroot.lift()
-        window.TKroot.focus_force()
-    except Exception:
-        pass
-    try:
-        while True:
-            event, _values = window.read()
-            if event in (sg.WIN_CLOSED, "-CLOSE-"):
-                return
-    finally:
-        window.close()
 
 
 def _mark_armed(session, hand_index: int, armed: bool) -> None:
