@@ -265,6 +265,11 @@ def _resolve_creatures(context, combat) -> None:
             continue
         if not _creature_still_present(creature, statuses):
             continue
+        if creature.card_id == 25:
+            if _scavenger_high_favor(state, player_id):
+                context.announce(f"拾荒者处于高好感度，不会攻击玩家{player_id}")
+                continue
+            context.announce(f"拾荒者处于低好感度，攻击玩家{player_id}")
         damage = _creature_damage(
             creature, centipede_count, player_id, context.announce
         )
@@ -292,6 +297,14 @@ def _creature_still_present(creature, statuses) -> bool:
     return any(
         item is creature for item in statuses.hand_creatures
     ) or any(item is creature for item in statuses.creature_threats)
+
+
+def _scavenger_high_favor(state, player_id: int) -> bool:
+    """给珍珠次数大于击杀次数时，拾荒者对这名玩家保持高好感度。"""
+    data = state.players[player_id].character_data
+    if not isinstance(data, SlugcatData):
+        return False
+    return data.pearls_given > data.scavengers_killed
 
 
 def _creature_damage(creature, centipede_count, player_id, announce) -> int:

@@ -65,6 +65,10 @@ def route_hand_card_event(session, event) -> tuple[str, int] | None:
                 session, session.card_images[creatures[creature_index].card_id]
             )
             return "preview_creature", creature_index
+        if getattr(session, "single_click_play", False):
+            # 单击出牌：一次点击直接确认打出生物。
+            _set_card_hint(session, "生物已确认，正在结算……")
+            return "confirmed_creature", creature_index
         if session.armed_creature_index == creature_index:
             _mark_armed(session, index, False)
             session.armed_creature_index = None
@@ -81,6 +85,10 @@ def route_hand_card_event(session, event) -> tuple[str, int] | None:
     if preview:
         preview_hand_card(session, index)
         return "preview", index
+    if getattr(session, "single_click_play", False):
+        # 单击出牌：一次点击直接确认打出。
+        _set_card_hint(session, "卡牌已确认，正在结算……")
+        return "confirmed", index
     if session.armed_hand_index == index:
         _mark_armed(session, index, False)
         session.armed_hand_index = None

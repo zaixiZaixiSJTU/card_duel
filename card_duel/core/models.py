@@ -129,6 +129,9 @@ class GameState:
     character_ids: dict[PlayerId, int | None] = field(
         default_factory=lambda: {1: None, 2: None}
     )
+    random_seed: int | None = None
+    first_player_id: int | None = None
+    round1_no_damage: bool = False
     game_over: bool = False
     local_player_id: PlayerId = 1
     round_number: int = 0

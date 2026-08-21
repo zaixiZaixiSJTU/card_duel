@@ -11,6 +11,7 @@ from card_duel.cards.slugcat.specs import (
     SLUGCAT_CHARACTER_ID,
     SLUGCAT_SPECS_BY_ID,
 )
+from card_duel.cards.slugcat.state import SlugcatData
 from card_duel.core.models import CreatureState
 from card_duel.core.rules import add_card_to_hand
 
@@ -253,16 +254,31 @@ def resolve_attack(
     )
     target = next((item for item in targets if item.label == selected), targets[0])
     if target.zone == "player":
+        player = context.state.players[target.player_id]
+        hp_before = player.health
         total, agility_consumed, life_loss = context.combat.apply_damage_with_report(
             damage, target.player_id, None
         )
+        blocked_round1 = (
+            context.state.round1_no_damage
+            and context.state.round_number == 1
+            and context.state.first_player_id == context.source_player_id
+        )
+        shown_loss = life_loss
+        if blocked_round1:
+            # 先手方第一回合不扣血：结算后把后手方血量恢复为攻击前，
+            # 插入/弃牌等其它效果照常保留。
+            player.health = hp_before
+            shown_loss = 0
         context.announce(
             f"玩家{context.source_player_id}使用{card_name}攻击{target.label}"
-            f"（总伤害{total}，扣敏捷{agility_consumed}，实际扣血{life_loss}）"
+            f"（总伤害{total}，扣敏捷{agility_consumed}，实际扣血{shown_loss}）"
         )
         if life_loss > 0 and on_player_penetrate is not None:
             on_player_penetrate(context)
-        return life_loss
+        if blocked_round1:
+            context.announce("先手方第一回合无法造成生命损失（血量已恢复）")
+        return shown_loss
     context.announce(f"玩家{context.source_player_id}使用{card_name}攻击{target.label}")
     damage_creature(
         context,
@@ -386,6 +402,13 @@ def on_creature_death(
         (private_announce or announce)(
             f"获得物品：{SLUGCAT_SPECS_BY_ID[item].name}（仅自己可见）"
         )
+
+    if card_id == 25 and isinstance(
+        state.players[player_id].character_data, SlugcatData
+    ):
+        data = state.players[player_id].character_data
+        data.scavengers_killed += 1
+        announce(f"玩家{player_id}击杀拾荒者，好感度下降")
 
     if creature.owner_id == player_id:
         _vulture_leaves_on_creature_death(state, player_id, announce)

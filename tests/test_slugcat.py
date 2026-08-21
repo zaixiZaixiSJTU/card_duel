@@ -654,6 +654,82 @@ class SlugcatTests(unittest.TestCase):
         self.assertTrue(self.play(46))
 
         self.assertIn(5, self.game.hand_cards)
+        self.assertEqual(slugcat_data(self.game.players[1]).pearls_given, 1)
+        self.assertTrue(any("好感度提升" in m for m in self.messages))
+
+    def test_colored_pearl_hire_increases_scavenger_favor(self):
+        add_hand_creature(self.game, 1, 25, owner_id=1)
+        self.game.players[1].energy = 1
+
+        self.assertTrue(self.play(47))
+
+        self.assertEqual(slugcat_data(self.game.players[1]).pearls_given, 1)
+
+    def test_scavenger_death_decreases_favor(self):
+        add_hand_creature(self.game, 1, 25, owner_id=1)
+        creature = hand_creature(self.game, 1, 25)
+        self.game.players[1].statuses.hand_creatures.remove(creature)
+
+        on_creature_death(self.game, 1, creature, self.messages.append)
+
+        self.assertEqual(slugcat_data(self.game.players[1]).scavengers_killed, 1)
+        self.assertTrue(any("好感度下降" in m for m in self.messages))
+
+    def test_high_favor_scavenger_does_not_attack(self):
+        add_hand_creature(self.game, 1, 25, owner_id=1)
+        data = slugcat_data(self.game.players[1])
+        data.pearls_given = 2
+        data.scavengers_killed = 1
+        self.game.players[1].health = 20
+
+        self._run_turn_end(DEFAULT_CHOICES)
+
+        self.assertEqual(self.game.players[1].health, 20)
+        self.assertTrue(any("高好感度，不会攻击" in m for m in self.messages))
+
+    def test_scavenger_attacks_at_low_favor(self):
+        add_hand_creature(self.game, 1, 25, owner_id=1)
+        hand_creature(self.game, 1, 25).held_item = 3
+        self.game.players[1].health = 20
+
+        self._run_turn_end(DEFAULT_CHOICES)
+
+        self.assertEqual(self.game.players[1].health, 10)
+        self.assertTrue(any("低好感度，攻击" in m for m in self.messages))
+
+    def test_explosive_selects_target_and_hits_self(self):
+        self.game.players[1].energy = 1
+        self.game.players[2].health = 30
+        self.game.players[1].health = 20
+
+        self.assertTrue(self.play(3))
+
+        self.assertEqual(self.game.players[2].health, 20)
+        self.assertEqual(self.game.players[1].health, 15)
+        self.assertTrue(
+            any("玩家1使用炸药攻击玩家2" in m for m in self.messages)
+        )
+
+    def test_explosive_can_target_creature(self):
+        add_hand_creature(self.game, 2, 20, owner_id=2)
+        self.game.players[1].energy = 1
+        self.game.players[1].health = 20
+
+        self.assertTrue(
+            DEFAULT_REGISTRY.play(
+                state=self.game,
+                character_id=4,
+                card_id=3,
+                source_player_id=1,
+                target_player_id=2,
+                announce=self.messages.append,
+                combat=self.combat,
+                choices=_TransferFlashChoices(),
+            )
+        )
+
+        self.assertEqual(self.game.players[2].statuses.hand_creatures, [])
+        self.assertEqual(self.game.players[1].health, 15)
 
     def test_creature_attack_respects_agility(self):
         add_hand_creature(self.game, 1, 19, owner_id=1)

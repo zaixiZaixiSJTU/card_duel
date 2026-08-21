@@ -157,9 +157,11 @@ def _queue_hand_card(context, card_id: int) -> None:
 def explosive(context):
     if not _pay_cost(context, 3):
         return False
-    context.combat.apply_damage(10, context.target_player_id, context.announce)
+    context.combat.resolve_attack(
+        context, 10, SLUGCAT_SPECS_BY_ID[3].name
+    )
+    context.announce(f"玩家{context.source_player_id}引爆炸药")
     context.combat.apply_damage(5, context.source_player_id, context.announce)
-    context.announce(f"玩家{context.source_player_id}引爆炸药（对目标10伤，自身5伤）")
     return True
 
 
@@ -507,6 +509,8 @@ def white_pearl(context):
         item = scavenger.held_item
         add_card_to_hand(context.state, item)
         context.source.statuses.last_dead_creature_health += 5
+        slugcat_data(context.source).pearls_given += 1
+        context.announce(f"玩家{context.source_player_id}给拾荒者珍珠，好感度提升")
         context.announce("白珍珠换来了拾荒者携带的物品")
         context.announce_private(
             f"获得物品：{SLUGCAT_SPECS_BY_ID[item].name}（仅自己可见）"
@@ -529,6 +533,8 @@ def colored_pearl(context):
             owner_id=scavenger.owner_id,
         )
         hired.held_item = scavenger.held_item
+        slugcat_data(context.source).pearls_given += 1
+        context.announce(f"玩家{context.source_player_id}给拾荒者珍珠，好感度提升")
         context.announce(
             f"玩家{context.source_player_id}雇佣拾荒者对付玩家"
             f"{context.target_player_id}"

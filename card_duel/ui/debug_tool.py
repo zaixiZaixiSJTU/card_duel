@@ -19,12 +19,17 @@ from card_duel.ui.network_style import (
     COLOR_MUTED,
     COLOR_PAPER,
     FONT_BODY,
+    FONT_BODY_BOLD,
     FONT_HEADING,
 )
 
 _DBG_APPLY = "-DBG-APPLY-"
 _DBG_ADD = "-DBG-ADD-"
 _DBG_CLOSE = "-DBG-CLOSE-"
+_DBG_TREE_KEY = "-DBG-TREE-"
+_DBG_CARD_INFO_KEY = "-DBG-CARD-INFO-"
+_CARD_ID_PREFIX = "-DBG-CARD-"
+_CATEGORY_ORDER = ("技能", "物品", "形态", "见闻", "生物", "插入物", "其他")
 
 
 def handle_chat_command(session, text: str) -> bool:
@@ -110,29 +115,56 @@ def open_debug_tool(session) -> None:
                 )
 
     rows.append([sg.HorizontalSeparator()])
-    card_options = [
-        f"{card.card_id} {card.name}"
-        for card in session.registry.get_catalog(character_id)
-    ]
     rows.append(
         [
-            sg.Text("加入卡牌", size=(10, 1), font=FONT_BODY),
-            sg.Combo(
-                card_options,
-                default_value=card_options[0] if card_options else "",
-                key="-DBG-CARD-",
-                size=(28, 1),
+            sg.Text(
+                "加入卡牌（按分类选择）",
+                font=FONT_BODY_BOLD,
+                text_color=COLOR_INK,
+            )
+        ]
+    )
+    tree_data = sg.TreeData()
+    _populate_card_tree(
+        tree_data, session.registry.get_catalog(character_id)
+    )
+    rows.append(
+        [
+            sg.Tree(
+                tree_data,
+                headings=["类型", "费用"],
+                key=_DBG_TREE_KEY,
+                num_rows=10,
+                col0_width=18,
+                def_col_width=8,
+                auto_size_columns=False,
+                justification="left",
+                enable_events=True,
                 font=FONT_BODY,
-                readonly=True,
-            ),
-            sg.Text("数量", size=(3, 1), font=FONT_BODY),
+            )
+        ]
+    )
+    rows.append(
+        [
+            sg.Text(
+                "选中卡牌：",
+                key=_DBG_CARD_INFO_KEY,
+                font=FONT_BODY,
+                text_color=COLOR_MUTED,
+                size=(50, 2),
+            )
+        ]
+    )
+    rows.append(
+        [
+            sg.Text("数量", font=FONT_BODY),
             sg.Input("1", key="-DBG-COUNT-", size=(4, 1), font=FONT_BODY),
+            sg.Button("加入卡牌", key=_DBG_ADD, font=FONT_BODY_BOLD),
         ]
     )
     rows.append(
         [
             sg.Button("应用修改", key=_DBG_APPLY),
-            sg.Button("加入卡牌", key=_DBG_ADD),
             sg.Button("关闭", key=_DBG_CLOSE),
         ]
     )
@@ -164,10 +196,83 @@ def poll_debug_tool(session) -> None:
     if event in (sg.WIN_CLOSED, _DBG_CLOSE, None):
         close_debug_tool(session)
         return
-    if event == _DBG_APPLY:
+    if event == _DBG_TREE_KEY:
+        _update_debug_card_info(session, values)
+    elif event == _DBG_APPLY:
         _apply_debug_values(session, values)
     elif event == _DBG_ADD:
         _add_debug_card(session, values)
+
+
+def _populate_card_tree(tree_data, cards) -> None:
+    """Group cards by category and insert them under category nodes."""
+    grouped: dict[str, list] = {}
+    for card in cards:
+        if card.card_id == 0:
+            continue
+        card_type = (
+            "插入物"
+            if card.card_id in (49, 50)
+            else (card.card_type or "其他")
+        )
+        grouped.setdefault(card_type, []).append(card)
+
+    def insert_category(category: str, items) -> None:
+        cat_key = f"-DBG-CAT-{category}-"
+        tree_data.Insert("", cat_key, category, ["", ""])
+        for card in sorted(items, key=lambda item: item.card_id):
+            cost = "X" if card.cost is None else str(card.cost)
+            tree_data.Insert(
+                cat_key,
+                f"{_CARD_ID_PREFIX}{card.card_id}-",
+                card.name,
+                [category, cost],
+            )
+
+    for category in _CATEGORY_ORDER:
+        items = grouped.pop(category, None)
+        if items:
+            insert_category(category, items)
+    for category, items in grouped.items():
+        insert_category(category, items)
+
+
+def _selected_card_id(session, values) -> int | None:
+    selected = values.get(_DBG_TREE_KEY, "")
+    if isinstance(selected, (list, tuple)):
+        selected = selected[0] if selected else ""
+    if not isinstance(selected, str) or not selected.startswith(_CARD_ID_PREFIX):
+        # FreeSimpleGUI 5.1 的 Tree 不把选中项写入 values，兜底读组件选中行。
+        try:
+            element = session.debug_tool_window[_DBG_TREE_KEY]
+            rows = getattr(element, "SelectedRows", None)
+            selected = rows[0] if rows else ""
+        except Exception:
+            selected = ""
+    if not isinstance(selected, str) or not selected.startswith(_CARD_ID_PREFIX):
+        return None
+    try:
+        return int(selected.removeprefix(_CARD_ID_PREFIX).removesuffix("-"))
+    except ValueError:
+        return None
+
+
+def _update_debug_card_info(session, values) -> None:
+    card_id = _selected_card_id(session, values)
+    if card_id is None:
+        return
+    definition = session.registry.get_card(
+        session.state.local_character_id, card_id
+    )
+    cost = "X" if definition.cost is None else str(definition.cost)
+    text = (
+        f"{definition.name} · {definition.card_type} · 费用{cost}\n"
+        f"{definition.description}"
+    )
+    try:
+        session.debug_tool_window[_DBG_CARD_INFO_KEY].update(text)
+    except Exception:
+        pass
 
 
 def close_debug_tool(session) -> None:
@@ -225,15 +330,24 @@ def _apply_debug_values(session, values) -> None:
 
 
 def _add_debug_card(session, values) -> None:
-    selected = values.get("-DBG-CARD-", "")
-    card_id = _parse_int(selected.split()[0]) if selected else None
+    card_id = _selected_card_id(session, values)
     if card_id is None:
         return
     count = max(1, min(_parse_int(values.get("-DBG-COUNT-")) or 1, 20))
     character_id = session.state.local_character_id
     definition = session.registry.get_card(character_id, card_id)
-    for _ in range(count):
-        session.state.hand_cards.append(card_id)
+    player_id = session.state.local_player_id
+    if definition.card_type == "生物":
+        # 与真实生成一致：生物进入生物区（hand_creatures），不占手牌卡槽。
+        from card_duel.cards.slugcat.creatures import add_hand_creature
+
+        for _ in range(count):
+            add_hand_creature(
+                session.state, player_id, card_id, owner_id=player_id
+            )
+    else:
+        for _ in range(count):
+            session.state.hand_cards.append(card_id)
     _broadcast_debug(
         session,
         f"调试：玩家{session.state.local_player_id}加入卡牌 "

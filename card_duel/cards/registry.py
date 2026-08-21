@@ -78,6 +78,9 @@ class CardRegistry:
         except KeyError as error:
             raise KeyError(f"角色 {character_id} 未注册") from error
 
+    def get_character_ids(self) -> tuple[int, ...]:
+        return tuple(sorted(self._characters))
+
     def get_card(self, character_id: int, card_id: int) -> CardDefinition:
         try:
             return self._cards[(character_id, card_id)]

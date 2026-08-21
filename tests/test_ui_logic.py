@@ -51,6 +51,8 @@ from card_duel.ui.opponent_viewer import (
 )
 from card_duel.ui.settings_window import (
     _apply_live_color_changes,
+    _apply_operation_settings,
+    _apply_sound_settings,
 )
 
 
@@ -308,10 +310,26 @@ class UiLogicTests(unittest.TestCase):
         session = self._debug_session()
 
         _add_debug_card(
-            session, {"-DBG-CARD-": "6 猫猫小跳", "-DBG-COUNT-": "2"}
+            session, {"-DBG-TREE-": "-DBG-CARD-6-", "-DBG-COUNT-": "2"}
         )
 
         self.assertEqual(session.state.hand_cards.count(6), 2)
+
+    def test_debug_add_creature_uses_creature_zone(self):
+        session = self._debug_session()
+
+        _add_debug_card(
+            session, {"-DBG-TREE-": "-DBG-CARD-20-", "-DBG-COUNT-": "1"}
+        )
+
+        self.assertEqual(session.state.hand_cards, [])
+        self.assertEqual(
+            [
+                item.card_id
+                for item in session.state.local_player.statuses.hand_creatures
+            ],
+            [20],
+        )
 
     def test_deck_viewer_separates_discoveries_and_creatures(self):
         state = self._slugcat_state()
@@ -399,7 +417,7 @@ class UiLogicTests(unittest.TestCase):
         self.assertEqual(session.log_type_colors["damage"], "#FF0000")
         self.assertTrue(any("#FF0000" in str(call) for call in recorder.calls))
 
-    def test_live_border_color_change_is_placeholder_only(self):
+    def test_live_border_color_change_applies(self):
         import tempfile
 
         from card_duel.ui import app_settings
@@ -419,7 +437,6 @@ class UiLogicTests(unittest.TestCase):
             log_history=[],
             require_window=lambda: window,
         )
-        before = runtime["creature"]
 
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(
@@ -430,8 +447,14 @@ class UiLogicTests(unittest.TestCase):
                 )
 
         self.assertEqual(session.card_border_colors["creature"], "#00FF00")
-        self.assertEqual(runtime["creature"], before)
-        self.assertTrue(any("占位" in line for line in recorder.lines))
+        self.assertEqual(runtime["creature"], "#00FF00")
+        self.assertTrue(any("已更新" in line for line in recorder.lines))
+
+    def test_card_art_detection_guards_rerender(self):
+        from card_duel.ui.network_view import _has_real_art
+
+        self.assertFalse(_has_real_art(4, 20))
+        self.assertTrue(_has_real_art(1, 1))
 
     def test_settings_save_load_round_trip(self):
         import tempfile
@@ -441,10 +464,22 @@ class UiLogicTests(unittest.TestCase):
         source = SimpleNamespace(
             log_type_colors={"damage": "#FF0000"},
             card_border_colors={"creature": "#00FF00"},
+            sound_enabled=False,
+            sound_effects={"hit", "card"},
+            single_click_play=True,
+            room_first_player="guest",
+            room_seed_text="42",
+            room_round1_no_damage=False,
         )
         target = SimpleNamespace(
             log_type_colors={},
             card_border_colors={},
+            sound_enabled=True,
+            sound_effects=set(),
+            single_click_play=False,
+            room_first_player="random",
+            room_seed_text="",
+            room_round1_no_damage=True,
         )
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(
@@ -455,6 +490,71 @@ class UiLogicTests(unittest.TestCase):
 
         self.assertEqual(target.log_type_colors, {"damage": "#FF0000"})
         self.assertEqual(target.card_border_colors, {"creature": "#00FF00"})
+        self.assertFalse(target.sound_enabled)
+        self.assertEqual(target.sound_effects, {"hit", "card"})
+        self.assertTrue(target.single_click_play)
+        self.assertEqual(target.room_first_player, "guest")
+        self.assertEqual(target.room_seed_text, "42")
+        self.assertFalse(target.room_round1_no_damage)
+
+    def test_settings_save_merges_with_existing_file(self):
+        import json
+        import tempfile
+
+        from card_duel.ui import app_settings
+
+        session = SimpleNamespace(
+            log_type_colors={"damage": "#FF0000"},
+            card_border_colors={},
+            sound_enabled=False,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = f"{tmp}/settings.json"
+            with open(cfg, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "log_type_colors": {
+                            "chat": "#123456",
+                            "damage": "#AAAAAA",
+                        },
+                        "card_border_colors": {"creature": "#00FF00"},
+                        "sound_enabled": False,
+                    },
+                    f,
+                )
+            with patch.object(app_settings, "CONFIG_PATH", cfg):
+                app_settings.save_settings(session)
+            with open(cfg, encoding="utf-8") as f:
+                saved = json.load(f)
+
+        self.assertEqual(saved["log_type_colors"]["damage"], "#FF0000")
+        self.assertEqual(saved["log_type_colors"]["chat"], "#123456")
+        self.assertEqual(saved["card_border_colors"]["creature"], "#00FF00")
+        self.assertFalse(saved["sound_enabled"])
+
+    def test_close_settings_saves_current_config(self):
+        import json
+        import tempfile
+
+        from card_duel.ui import app_settings
+        from card_duel.ui.settings_window import close_settings
+
+        session = SimpleNamespace(
+            log_type_colors={"gain": "#00FF00"},
+            card_border_colors={},
+            sound_enabled=True,
+            settings_window=object(),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(
+                app_settings, "CONFIG_PATH", f"{tmp}/settings.json"
+            ):
+                close_settings(session)
+            with open(f"{tmp}/settings.json", encoding="utf-8") as f:
+                saved = json.load(f)
+
+        self.assertEqual(saved["log_type_colors"]["gain"], "#00FF00")
+        self.assertIsNone(session.settings_window)
 
     def test_rerender_log_uses_current_colors(self):
         from card_duel.ui.network_log import rerender_log
@@ -478,6 +578,105 @@ class UiLogicTests(unittest.TestCase):
         self.assertTrue(any("#FF0000" in str(call) for call in recorder.calls))
         self.assertEqual(recorder.lines.count("玩家2失去5点生命\n"), 1)
         self.assertIn("[我] 在吗\n", recorder.lines)
+
+    def test_sound_is_inactive_until_activated(self):
+        from card_duel.ui.sound import play_sound
+
+        play_sound("hit")
+        play_sound("missing-file")
+
+    def test_sound_toggle_updates_session(self):
+        from card_duel.ui.settings_window import _apply_sound_toggle
+
+        session = SimpleNamespace(
+            sound_enabled=True,
+            require_window=lambda: _Window(),
+            state=self._slugcat_state(),
+            card_images=[b""] * 51,
+        )
+
+        _apply_sound_toggle(session, {"-SOUND-ENABLED-": False})
+
+        self.assertFalse(session.sound_enabled)
+
+    def test_single_click_play_confirms_card_on_first_click(self):
+        state = self._slugcat_state()
+        state.hand_cards[:] = [6]
+        session = SimpleNamespace(
+            state=state,
+            card_images=[b""] * 51,
+            armed_hand_index=None,
+            armed_creature_index=None,
+            single_click_play=True,
+            require_window=lambda: _Window(),
+        )
+
+        self.assertEqual(
+            route_hand_card_event(session, "-BTN0-"), ("confirmed", 0)
+        )
+
+    def test_single_click_play_confirms_creature_on_first_click(self):
+        state = self._slugcat_state()
+        add_hand_creature(state, 1, 20, owner_id=1)
+        session = SimpleNamespace(
+            state=state,
+            card_images=[b""] * 51,
+            armed_hand_index=None,
+            armed_creature_index=None,
+            single_click_play=True,
+            require_window=lambda: _Window(),
+        )
+
+        self.assertEqual(
+            route_hand_card_event(session, "-BTN0-"),
+            ("confirmed_creature", 0),
+        )
+
+    def test_apply_sound_settings(self):
+        import tempfile
+
+        from card_duel.ui import app_settings
+
+        session = SimpleNamespace(
+            sound_enabled=True,
+            sound_effects=set(),
+            require_window=lambda: _Window(),
+            state=self._slugcat_state(),
+            card_images=[b""] * 51,
+        )
+        values = {
+            "-SOUND-ENABLED-": False,
+            "-SOUND-EFFECT-hit-": True,
+            "-SOUND-EFFECT-draw-": False,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(
+                app_settings, "CONFIG_PATH", f"{tmp}/settings.json"
+            ):
+                _apply_sound_settings(session, values)
+
+        self.assertFalse(session.sound_enabled)
+        self.assertIn("hit", session.sound_effects)
+        self.assertNotIn("draw", session.sound_effects)
+
+    def test_apply_operation_settings(self):
+        import tempfile
+
+        from card_duel.ui import app_settings
+
+        session = SimpleNamespace(
+            single_click_play=False,
+            require_window=lambda: _Window(),
+            state=self._slugcat_state(),
+            card_images=[b""] * 51,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(
+                app_settings, "CONFIG_PATH", f"{tmp}/settings.json"
+            ):
+                _apply_operation_settings(session, {"-OP-SINGLE-": True})
+
+        self.assertTrue(session.single_click_play)
 
     def test_deck_card_preview_requires_right_click(self):
         session = SimpleNamespace(

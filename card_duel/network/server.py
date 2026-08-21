@@ -17,7 +17,15 @@ from card_duel.network.protocol import (
     signal_turn_change,
 )
 from card_duel.network.session import GameSession
-from card_duel.network.setup import exchange_character_choices, prepare_game_window
+from card_duel.network.setup import (
+    announce_room_config,
+    announce_winner,
+    apply_room_config,
+    ask_rematch,
+    prepare_game_window,
+    reset_for_rematch,
+    room_phase,
+)
 from card_duel.network.transport import send_json
 from card_duel.ui.auxiliary_windows import close_auxiliary_windows
 from card_duel.ui.network_dialogs import waiting_dialog
@@ -65,6 +73,7 @@ def run_server_game(session):
     draw_cards(game_state, 2)
     refresh_cards(game_state, window, session.card_images)
     round_number = 1
+    host_first = game_state.first_player_id == 1
 
     while session.combat.winning_player_id() is None:
         print(f"-------------------- ROUND {round_number} --------------------")
@@ -72,20 +81,50 @@ def run_server_game(session):
             player.energy = random.randint(4, 6)
         send_game_state(session)
 
-        if not play_active_turn(session, player_id=1, round_number=round_number):
-            return
-
-        set_phase(window, f"回合 {round_number} - 对手出牌中...")
+        if host_first:
+            if not play_active_turn(
+                session, player_id=1, round_number=round_number
+            ):
+                return None
+            set_phase(window, f"回合 {round_number} - 对手出牌中...")
+            signal_turn_change(session)
+            receive_until_turn_change(session)
+        else:
+            set_phase(window, f"回合 {round_number} - 对手出牌中...")
+            signal_turn_change(session)
+            receive_until_turn_change(session)
+            if not play_active_turn(
+                session, player_id=1, round_number=round_number
+            ):
+                return None
+            signal_turn_change(session)
         print(" ---------------------------------------------------- ")
-        signal_turn_change(session)
-        receive_until_turn_change(session)
         print("[对手的回合结束]")
         refresh_cards(game_state, window, session.card_images)
         print(" ---------------------------------------------------- ")
         round_number += 1
 
     set_phase(window, "游戏结束")
-    window.read()
+    return session.combat.winning_player_id()
+
+
+def host_match(session) -> None:
+    """Play matches until one side quits; re-select and rematch in between."""
+    while True:
+        config = room_phase(session, session.registry, is_host=True)
+        if config is None:
+            return
+        apply_room_config(session, config, local_player_id=1)
+        if not prepare_game_window(session):
+            return
+        announce_room_config(session)
+        winner = run_server_game(session)
+        if winner is None:
+            return
+        announce_winner(session, winner)
+        if not ask_rematch(session, is_host=True):
+            return
+        reset_for_rematch(session, local_player_id=1)
 
 
 def main():
@@ -95,11 +134,7 @@ def main():
     session = GameSession(state=state, connection=connection)
 
     try:
-        if not exchange_character_choices(session, local_player_id=1):
-            return
-        if not prepare_game_window(session):
-            return
-        run_server_game(session)
+        host_match(session)
     except (ConnectionError, OSError, ValueError) as error:
         sg.popup_error(f"联网对战中断: {error}", keep_on_top=True)
     finally:

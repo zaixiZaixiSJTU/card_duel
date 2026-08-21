@@ -24,6 +24,15 @@ LOG_CATEGORIES = tuple(item[0] for item in LOG_TYPES)
 LOG_TYPE_NAMES = {item[0]: item[1] for item in LOG_TYPES}
 LOG_TYPE_COLORS = {item[0]: item[2] for item in LOG_TYPES}
 
+_SOUND_BY_CATEGORY = {
+    "chat": "chat",
+    "turn": "turn",
+    "damage": "hit",
+    "gain": "draw",
+    "warn": "warn",
+    "normal": "click",
+}
+
 
 def _session_window(session):
     require_window = getattr(session, "require_window", None)
@@ -70,6 +79,15 @@ def append_log(session, message: str, *, color: str | None = None) -> None:
     history = getattr(session, "log_history", None)
     if history is not None:
         history.append(message)
+    if getattr(session, "sound_enabled", True):
+        from card_duel.ui.sound import play_sound
+
+        sound_name = "card" if "打出" in message else _SOUND_BY_CATEGORY.get(
+            category, "click"
+        )
+        effects = getattr(session, "sound_effects", None)
+        if effects is None or sound_name in effects:
+            play_sound(sound_name)
     try:
         window = _session_window(session)
         element = window["-OUTPUT-"]

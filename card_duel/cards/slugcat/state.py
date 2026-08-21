@@ -31,6 +31,8 @@ class SlugcatData:
     discovery_discount: dict[int, int] = field(default_factory=dict)
     next_bubble_mode: str | None = None
     last_centipede_round: int = -1
+    pearls_given: int = 0
+    scavengers_killed: int = 0
 
 
 def slugcat_data(player) -> SlugcatData:

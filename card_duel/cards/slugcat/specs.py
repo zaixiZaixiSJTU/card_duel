@@ -1,6 +1,6 @@
 """Static card data for the Slugcat character.
 
-The source of truth is ``工作簿1_规范修订版.xlsx``.  Keeping the textual
+The source of truth is ``docs/工作簿1.xlsx``.  Keeping the textual
 rules here separate from effect code makes later balance edits auditable.
 """
 

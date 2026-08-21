@@ -11,6 +11,8 @@ def build_shuffled_deck(
     first_card_id: int,
     last_card_id: int,
     card_counts: dict[int, int] | None = None,
+    *,
+    random_seed: int | None = None,
 ) -> list[int]:
     counts = card_counts or {
         card_id: 1 for card_id in range(first_card_id, last_card_id + 1)
@@ -20,7 +22,10 @@ def build_shuffled_deck(
         for card_id in range(first_card_id, last_card_id + 1)
         for _ in range(counts.get(card_id, 0))
     ]
-    random.shuffle(deck)
+    if random_seed is None:
+        random.shuffle(deck)
+    else:
+        random.Random(random_seed).shuffle(deck)
     return deck
 
 

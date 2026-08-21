@@ -49,6 +49,28 @@ def _border_color_for(card_id, creature, card_images) -> str:
     return _card_border_colors["normal"]
 
 
+_ART_CHECK_CACHE: dict[tuple[int, int], bool] = {}
+
+
+def _has_real_art(character_id, card_id: int) -> bool:
+    """Whether the character has a real artwork file for this card."""
+    key = (character_id, card_id)
+    cached = _ART_CHECK_CACHE.get(key)
+    if cached is not None:
+        return cached
+    result = False
+    try:
+        from card_duel.core.resources import resolve_resource_path
+
+        result = resolve_resource_path(
+            f"assets/cards/{character_id}/img-{card_id}.jpg"
+        ).exists()
+    except Exception:
+        result = False
+    _ART_CHECK_CACHE[key] = result
+    return result
+
+
 def refresh_status(game_state, window, registry, snapshots=None):
     local_player = game_state.players[game_state.local_player_id]
     opponent_player = game_state.players[game_state.opponent_player_id]
@@ -188,6 +210,7 @@ def refresh_cards(game_state, window, card_images):
             effective_cost != definition.cost
             or creature is not None
             or card_id in (49, 50)
+            or not _has_real_art(game_state.local_character_id, card_id)
         ):
             image_data = render_card(
                 definition,

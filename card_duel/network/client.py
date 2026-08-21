@@ -16,7 +16,15 @@ from card_duel.network.protocol import (
     signal_turn_change,
 )
 from card_duel.network.session import GameSession
-from card_duel.network.setup import exchange_character_choices, prepare_game_window
+from card_duel.network.setup import (
+    announce_room_config,
+    announce_winner,
+    apply_room_config,
+    ask_rematch,
+    prepare_game_window,
+    reset_for_rematch,
+    room_phase,
+)
 from card_duel.network.transport import receive_json
 from card_duel.ui.auxiliary_windows import close_auxiliary_windows
 from card_duel.ui.network_style import init_theme
@@ -133,14 +141,33 @@ def run_client_game(session):
         print(" ---------------------------------------------------- ")
 
         if not play_active_turn(session, player_id=2, round_number=round_number):
-            return
+            return None
         signal_turn_change(session)
         time.sleep(0.3)
         print(" ---------------------------------------------------- ")
         round_number += 1
 
     set_phase(window, "游戏结束")
-    window.read()
+    return session.combat.winning_player_id()
+
+
+def join_match(session) -> None:
+    """Play matches until one side quits; re-select and rematch in between."""
+    while True:
+        config = room_phase(session, session.registry, is_host=False)
+        if config is None:
+            return
+        apply_room_config(session, config, local_player_id=2)
+        if not prepare_game_window(session):
+            return
+        announce_room_config(session)
+        winner = run_client_game(session)
+        if winner is None:
+            return
+        announce_winner(session, winner)
+        if not ask_rematch(session, is_host=False):
+            return
+        reset_for_rematch(session, local_player_id=2)
 
 
 def main():
@@ -153,11 +180,7 @@ def main():
 
     try:
         receive_welcome_message(connection)
-        if not exchange_character_choices(session, local_player_id=2):
-            return
-        if not prepare_game_window(session):
-            return
-        run_client_game(session)
+        join_match(session)
     except (ConnectionError, OSError, ValueError, json.JSONDecodeError) as error:
         sg.popup_error(f"联网对战中断: {error}", keep_on_top=True)
     finally:

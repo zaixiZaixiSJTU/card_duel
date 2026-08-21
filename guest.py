@@ -1,6 +1,6 @@
-"""Compatibility launcher for the network client."""
+"""Compatibility launcher showing the main menu (create / join)."""
 
-from card_duel.network.client import main
+from card_duel.network.launcher import run_launcher
 
 if __name__ == "__main__":
-    main()
+    run_launcher()
