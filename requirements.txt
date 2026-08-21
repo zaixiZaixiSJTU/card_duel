@@ -1,2 +1,4 @@
+fastapi>=0.116,<1
 FreeSimpleGUI
 Pillow
+uvicorn[standard]>=0.35,<1

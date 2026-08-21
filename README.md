@@ -1,6 +1,8 @@
 # Card Duel（卡牌对决）
 
-Python 双人卡牌对战项目，通过 TCP 支持同机或局域网联机。项目使用可扩展角色目录、五阶段回合引擎和统一消息协议；战士与蛞蝓猫已实现，女猎手和时间守护者目前是显式占位角色。
+Python 双人卡牌对战项目，通过 TCP 支持同机或局域网联机，并已开始迁移至
+WebSocket 权威服务器。项目使用可扩展角色目录、五阶段回合引擎和统一消息协议；
+战士与蛞蝓猫已实现，女猎手和时间守护者目前是显式占位角色。
 
 ## 快速开始
 
@@ -23,10 +25,39 @@ python guest.py  # 玩家 2 加入房间
 
 本机测试时，在两个终端中分别启动 `main.py` 和 `guest.py`，玩家 2 输入 `127.0.0.1`。默认端口为 `65432`，此方式会完整经过真实选角、卡牌、回合、聊天和网络同步逻辑。
 
+### Web 版（迁移阶段二）
+
+启动 FastAPI 权威房间服务：
+
+```powershell
+card-duel-web
+# 或
+python -m uvicorn card_duel.web.app:app --reload
+```
+
+服务说明首页位于 `GET /`，健康检查位于 `GET /health`，WebSocket 入口为
+`WS /ws`。当前 Web 纵切已支持 6 位房间号、双人加入、选角、房主规则、
+准备开局、房间聊天、权威五阶段回合、出牌、弃牌、卡牌选择恢复、断线清理和
+按玩家裁剪的状态；桌面 TCP 对战仍保持原有完整玩法。
+
+另开一个终端启动浏览器前端（Node.js 20.9+）：
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+打开 `http://localhost:3000`，页面默认连接 `ws://127.0.0.1:8000/ws`。前端已
+覆盖连接、创建/加入房间、选角、规则配置、准备、聊天、手牌/生物出牌、弃牌、
+结束回合及事务型选择。`http://localhost:8000` 是后端服务说明页，不是游戏
+页面。浏览器动作和服务端事件格式见 [Web 后端协议](docs/WEB_BACKEND.md)。
+前后端分开上线的完整参数见 [部署指南](docs/DEPLOYMENT.md)。
+
 ## 依赖方向
 
 ```text
-启动入口 / UI / network
+启动入口 / UI / network / web
           │
           ▼
 application          组装角色感知的用例服务
@@ -45,7 +76,8 @@ cards                 core
 - 角色规则通过目录注入 `CombatEngine`，核心规则不判断角色编号；
 - `GameState` 只保存对局数据，窗口和连接属于 `GameSession`；
 - UI 不结算伤害、抽牌、消耗或角色能力；
-- 联机消息全部使用长度前缀 JSON，不依赖一次 `recv()` 恰好收到一条消息。
+- 桌面 TCP 消息使用长度前缀 JSON，不依赖一次 `recv()` 恰好收到一条消息；
+- WebSocket 消息使用带协议版本的动作/事件 JSON，由服务端维护权威房间状态。
 
 这些约束由 `tests/test_architecture.py` 固定，不只是文档约定。
 
@@ -55,7 +87,8 @@ cards                 core
 card_duel/
 ├── application/
 │   ├── choices.py              # 卡牌选择端口与无 GUI 实现
-│   └── combat.py               # CombatEngine：角色感知的战斗用例
+│   ├── combat.py               # CombatEngine：角色感知的战斗用例
+│   └── turns.py                # 桌面/Web 共用的抽牌、弃牌和返还操作
 ├── cards/
 │   ├── models.py               # CardPlayContext、卡牌/角色契约
 │   ├── registry.py             # 纯通用 CardRegistry，不导入具体角色
@@ -88,6 +121,11 @@ card_duel/
 │   ├── gameplay.py             # 双端共用五阶段主动回合
 │   ├── server.py               # 玩家 1
 │   └── client.py               # 玩家 2
+├── web/
+│   ├── protocol.py             # 浏览器动作/事件信封与校验
+│   ├── gameplay.py             # 权威回合动作与可恢复选择
+│   ├── rooms.py                # 内存房间、动作路由和私有状态视图
+│   └── app.py                  # FastAPI 健康检查与 WebSocket 入口
 └── ui/
     ├── network.py             # 联网主布局
     ├── network_style.py       # 联网视觉常量和主题
@@ -102,6 +140,9 @@ card_duel/
 ```
 
 根目录的 `main.py`、`guest.py` 是兼容启动入口。`output/`、虚拟环境、缓存和构建产物均由 `.gitignore` 排除。
+
+`frontend/` 是独立的 React + Next.js 浏览器客户端，`app/game-client.tsx` 负责
+协议 2 的连接和三种界面状态，`app/globals.css` 提供响应式牌桌布局。
 
 ## 卡牌究竟在哪里注册
 
@@ -235,6 +276,10 @@ python -m unittest discover -s tests -v
 python -m compileall -q card_duel main.py guest.py examples tools tests
 ruff check .
 ruff format --check .
+cd frontend
+npm run lint
+npm test
+npm run build
 ```
 
 包元数据、命令入口、依赖和静态检查配置位于 `pyproject.toml`。

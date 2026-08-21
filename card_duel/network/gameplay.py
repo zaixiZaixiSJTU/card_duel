@@ -4,8 +4,13 @@ from contextlib import suppress
 
 import FreeSimpleGUI as sg
 
+from card_duel.application.turns import HAND_LIMIT
+from card_duel.application.turns import can_discard as _can_discard
+from card_duel.application.turns import draw_turn_cards as _draw_turn_cards
+from card_duel.application.turns import effective_hand_size as _effective_hand_size
+from card_duel.application.turns import remove_played_card as _remove_played_card
+from card_duel.application.turns import return_card_after_use as _return_card_after_use
 from card_duel.core.game import TurnEngine, TurnPhase
-from card_duel.core.rules import draw_cards
 from card_duel.network.protocol import (
     receive_pending_chat,
     send_announcement,
@@ -28,8 +33,6 @@ from card_duel.ui.network_view import (
     set_cards_enabled,
     set_phase,
 )
-
-HAND_LIMIT = 4
 
 
 def play_active_turn(session, player_id, round_number):
@@ -109,59 +112,6 @@ def _enter_phase(session, turn, phase):
         f"回合 {turn.round_number} - {phase.value}",
     )
     return turn.enter_phase(phase)
-
-
-def _draw_turn_cards(context, local_announce=None):
-    if context.game_state.character_ids.get(context.player_id) == 4:
-        _draw_slugcat_cards(
-            context.game_state,
-            2,
-            1,
-            local_announce or context.announce,
-        )
-    else:
-        draw_cards(context.game_state, 3)
-
-
-def _draw_slugcat_cards(game_state, skill_count, item_count, announce):
-    """Draw by type without ever actively drawing creature cards."""
-    from card_duel.cards.slugcat.specs import SLUGCAT_SPECS_BY_ID
-
-    drawn = []
-
-    def draw_type(card_type, amount):
-        for _ in range(amount):
-            index = next(
-                (
-                    index
-                    for index, card_id in enumerate(game_state.draw_pile)
-                    if SLUGCAT_SPECS_BY_ID[card_id].card_type == card_type
-                ),
-                None,
-            )
-            if index is None:
-                break
-            drawn.append(game_state.draw_pile.pop(index))
-
-    draw_type("技能", skill_count)
-    draw_type("物品", item_count)
-    while len(drawn) < skill_count + item_count:
-        index = next(
-            (
-                index
-                for index, card_id in enumerate(game_state.draw_pile)
-                if SLUGCAT_SPECS_BY_ID[card_id].card_type not in {"生物", "见闻"}
-            ),
-            None,
-        )
-        if index is None:
-            break
-        drawn.append(game_state.draw_pile.pop(index))
-    game_state.hand_cards.extend(drawn)
-    if drawn:
-        names = "、".join(SLUGCAT_SPECS_BY_ID[card_id].name for card_id in drawn)
-        announce(f"抽牌：{names}")
-    return len(drawn)
 
 
 def _run_card_play_phase(session, player_id, opponent_id, announce, choices):
@@ -244,30 +194,6 @@ def _run_card_play_phase(session, player_id, opponent_id, announce, choices):
             send_game_state(session)
 
 
-def _remove_played_card(game_state, original_index, card_id):
-    if (
-        original_index < len(game_state.hand_cards)
-        and game_state.hand_cards[original_index] == card_id
-    ):
-        game_state.hand_cards.pop(original_index)
-        return
-    with suppress(ValueError):
-        game_state.hand_cards.remove(card_id)
-
-
-def _return_card_after_use(game_state, player_id, card_id):
-    from card_duel.cards.slugcat.specs import SLUGCAT_DISCOVERY_IDS
-    from card_duel.cards.slugcat.state import SlugcatData, slugcat_data
-
-    player = game_state.players[player_id]
-    if card_id in SLUGCAT_DISCOVERY_IDS and isinstance(
-        player.character_data, SlugcatData
-    ):
-        slugcat_data(player).discovery_pool.append(card_id)
-    else:
-        game_state.discard_pile.append(card_id)
-
-
 def _run_discard_phase(session, announce):
     game_state = session.state
     window = session.require_window()
@@ -311,19 +237,3 @@ def _run_discard_phase(session, announce):
         refresh_cards(game_state, window, session.card_images)
 
     return True
-
-
-def _effective_hand_size(game_state, player_id):
-    if game_state.character_ids.get(player_id) != 4:
-        return game_state.hand_size
-    from card_duel.cards.slugcat.hand import effective_hand_size
-
-    return effective_hand_size(game_state, player_id)
-
-
-def _can_discard(game_state, player_id, card_id):
-    if game_state.character_ids.get(player_id) != 4:
-        return card_id not in (49, 50)
-    from card_duel.cards.slugcat.specs import SLUGCAT_NO_DISCARD_IDS
-
-    return card_id not in SLUGCAT_NO_DISCARD_IDS

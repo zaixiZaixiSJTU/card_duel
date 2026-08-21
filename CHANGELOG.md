@@ -3,9 +3,25 @@
 本文件记录 Card Duel 对战项目的可见行为变更。仅保留近期条目，
 更早的历史可在 git 提交记录中追溯。
 
-## [Unreleased] - 2026-08-20
+## [Unreleased] - 2026-08-21
 
 ### Added
+- 新增 `frontend/` React + Next.js 浏览器客户端，覆盖 WebSocket 连接、房间创建/
+  加入、选角与规则、准备/聊天、权威五阶段牌桌、手牌/生物出牌、弃牌、结束
+  回合，以及 `integer / option / card_indexes` 三类事务型选择。
+- Web 个性化状态新增公开 `card_catalogs` 和与本人手牌位置对齐的动态
+  `card_costs`，前端无需复制角色费用规则，也不会获知对方私有牌区。
+- 新增 Card Duel 品牌分享图、Open Graph/X 元数据、响应式桌面/移动布局和
+  服务端渲染协议契约测试。
+- 新增 FastAPI WebSocket 权威房间服务首个纵切：6 位房间号、创建/加入、
+  选角、房主规则、准备开局、聊天、断线清理与健康检查。
+- Web 开局复用角色目录、`GameState`、`CombatEngine` 和既有洗牌规则，并为
+  双方维护独立牌区；状态按接收玩家裁剪，不泄露对方手牌及待处理私有队列。
+- 新增 Web 协议版本 1、`card-duel-web` 启动命令和协议说明文档。
+- Web 协议升级至版本 2：新增权威五阶段回合、服务端抽牌与能量、出牌、
+  弃牌、结束回合、胜负判定，以及 `choice_required / resolve_choice` 多步选择。
+- 卡牌选择采用事务快照：选择不足时回滚动作，回答后从干净状态确定性重放，
+  避免重复扣能量、伤害或弃牌；公共与私有结算日志分别投递。
 - 引入杀戮尖塔风格的「抽牌堆 / 弃牌堆」双堆循环：打出的非消耗牌、
   弃牌阶段弃置的牌、插入物拔出后返回等，统一进入 `discard_pile`；
   当 `draw_pile` 抽空时自动将弃牌堆洗入抽牌堆。
@@ -21,6 +37,16 @@
   当前场景的非物品牌，保持场景一致性。
 
 ### Fixed
+- 允许通过 `127.0.0.1` 访问 Next.js 开发服务器，避免开发资源因来源与
+  `localhost` 不同而被拦截，导致页面交互或热更新失效。
+- 浏览器前端兼容仍在运行的旧协议 2 后端进程：缺少 `card_catalogs` 或
+  `card_costs` 时降级为卡牌编号/静态费用并提示重启，不再在进入对局时因读取
+  `undefined` 崩溃。
+- 修复日志自动滚动 `useEffect` 隐式返回 Promise，导致 React 在进入大厅卸载
+  effect 时抛出 `destroy is not a function` 并显示错误覆盖层的问题。
+- 移除 Sites、Cloudflare Worker、vinext 与未使用的数据库示例骨架，改为标准
+  Next.js 16 App Router 构建；部署平台只需支持 Node.js/Next.js，WebSocket
+  后端通过 `NEXT_PUBLIC_CARD_DUEL_WS_URL` 独立配置。
 - 修复合并 `03cc41c` 时 `_apply_local_pending_actions` 被旧分支覆盖导致的
   回归：`pending_draw_returns` 中的非见闻卡重新路由到 `discard_pile`，
   生物卡（16–26）返还到 `unlocked_creature_counts`，不再进入抽牌堆循环。
