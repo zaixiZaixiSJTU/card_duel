@@ -32,7 +32,7 @@ def create_app(manager: RoomManager | None = None) -> FastAPI:
 <body>
   <h1>Card Duel Web API</h1>
   <p>权威房间服务正在运行，Web 协议版本为 <strong>2</strong>。</p>
-  <p>当前阶段提供房间、权威五阶段回合、出牌、弃牌和选择恢复；游戏 Web 前端尚未接入。</p>
+  <p>当前服务提供房间、权威五阶段回合、出牌、原子弃牌和选择恢复；浏览器前端在独立的 <code>frontend/</code> 服务中运行。</p>
   <ul>
     <li><a href="/health">健康检查</a></li>
     <li><a href="/docs">API 文档</a></li>

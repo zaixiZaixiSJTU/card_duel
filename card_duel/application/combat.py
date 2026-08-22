@@ -19,7 +19,7 @@ class CombatEngine:
             if character_id is None:
                 raise ValueError(f"玩家 {player_id} 尚未选择角色")
             player = self.state.players[player_id]
-            player.health = 30
+            player.health = player.max_health = 30
             player.energy = player.strength = player.poison = 0
             player.defences.clear()
             player.statuses = CombatStatuses()

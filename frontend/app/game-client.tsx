@@ -3,6 +3,18 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 
+import { GameTooltip } from "./components/game-tooltip";
+import {
+  GAME_TERMS,
+  INLINE_RULE_TERMS,
+  cardCostExplanation,
+  cardTypeExplanation,
+  phaseExplanation,
+  statusExplanation,
+} from "./game-terms";
+import type { GameExplanation } from "./game-terms";
+import { toggleLimitedIndex } from "./selection";
+
 type ConnectionStatus = "idle" | "connecting" | "connected" | "closed";
 
 type CharacterOption = { character_id: number; name: string };
@@ -34,6 +46,7 @@ type Creature = {
 
 type PublicPlayer = {
   health: number;
+  max_health?: number;
   energy: number;
   strength: number;
   poison: number;
@@ -65,6 +78,8 @@ type MatchView = {
   you: {
     hand_cards: number[];
     card_costs?: Array<number | null>;
+    card_discardable?: boolean[];
+    effective_hand_size?: number;
     draw_count: number;
     discard_count: number;
   };
@@ -96,6 +111,7 @@ const phaseIndex: Record<string, number> = {
 };
 
 const phases = ["回合开始", "抽牌", "出牌", "弃牌", "回合结束"];
+const inlineRulePattern = new RegExp(`(${INLINE_RULE_TERMS.map(({ term }) => term).join("|")})`, "g");
 
 function defaultEndpoint() {
   const configuredEndpoint = process.env.NEXT_PUBLIC_CARD_DUEL_WS_URL;
@@ -185,9 +201,15 @@ export function GameClient() {
         }
         addLog("对局开始", "turn");
         break;
-      case "state":
-        setMatch(data.state as MatchView);
+      case "state": {
+        const nextMatch = data.state as MatchView;
+        setMatch(nextMatch);
+        if (!nextMatch.pending_choice) {
+          setChoice(null);
+          setSelectedIndexes([]);
+        }
         break;
+      }
       case "chat":
         addLog(`玩家${data.player_id}：${data.message}`, "chat");
         break;
@@ -213,6 +235,10 @@ export function GameClient() {
         break;
       case "room_closed":
         addLog("房间已关闭", "warn");
+        resetSession();
+        break;
+      case "room_left":
+        addLog("已离开房间", "system");
         resetSession();
         break;
       case "error":
@@ -402,7 +428,7 @@ function DemoCards() {
 }
 
 function PhaseFooter() {
-  return <footer className="entry-footer">{phases.map((phase, index) => <span key={phase}>{index > 0 && <i />}{phase}</span>)}</footer>;
+  return <footer className="entry-footer">{phases.map((phase, index) => <GameTooltip key={phase} explanation={phaseExplanation(phase)}>{index > 0 && <i />}{phase}</GameTooltip>)}</footer>;
 }
 
 function LobbyScreen(props: {
@@ -433,7 +459,7 @@ function LobbyScreen(props: {
               const selected = local?.character_id === character.character_id;
               const implemented = [1, 4].includes(character.character_id);
               return <button key={character.character_id} type="button" disabled={!implemented} className={`character-card char-${character.character_id} ${selected ? "selected" : ""}`} onClick={() => send("select_character", { character_id: character.character_id })}>
-                <span className="character-number">0{character.character_id}</span><div className="character-glyph">{character.character_id === 1 ? "战" : character.character_id === 4 ? "猫" : "?"}</div><small>{implemented ? "PLAYABLE" : "IN DEVELOPMENT"}</small><strong>{character.name}</strong><p>{character.character_id === 1 ? "防御 · 力量 · 献祭" : character.character_id === 4 ? "敏捷 · 业力 · 生物" : "角色机制开发中"}</p>{selected && <b>已选择</b>}
+                <span className="character-number">0{character.character_id}</span><div className="character-glyph">{character.character_id === 1 ? "战" : character.character_id === 4 ? "猫" : "?"}</div><small>{implemented ? "PLAYABLE" : "IN DEVELOPMENT"}</small><strong>{character.name}</strong><p><RuleText text={character.character_id === 1 ? "防御 · 力量 · 献祭" : character.character_id === 4 ? "敏捷 · 业力 · 生物" : "角色机制开发中"} /></p>{selected && <b>已选择</b>}
               </button>;
             })}
           </div>
@@ -472,6 +498,12 @@ function MatchScreen(props: {
   lastPlayed: { character_id: number; card_id: number } | null; connection: ConnectionStatus; children: ReactNode;
 }) {
   const { match } = props;
+  const [discardDraft, setDiscardDraft] = useState({
+    revision: match.revision,
+    activePlayerId: match.active_player_id,
+    mode: false,
+    indexes: [] as number[],
+  });
   const me = match.players[String(match.player_id)];
   const opponentId = match.player_id === 1 ? 2 : 1;
   const opponent = match.players[String(opponentId)];
@@ -480,15 +512,43 @@ function MatchScreen(props: {
   const myTurn = match.active_player_id === match.player_id;
   const inPlay = match.current_phase === "出牌阶段";
   const inDiscard = match.current_phase === "弃牌阶段";
+  const draftIsCurrent = discardDraft.revision === match.revision && discardDraft.activePlayerId === match.active_player_id;
+  const discardMode = draftIsCurrent && discardDraft.mode;
+  const discardSelection = draftIsCurrent ? discardDraft.indexes : [];
+  const selectingDiscard = discardMode || inDiscard;
+  const effectiveHandSize = match.you.effective_hand_size ?? match.you.hand_cards.length;
+  const excessCards = Math.max(0, effectiveHandSize - match.hand_limit);
   const currentPhase = phaseIndex[match.current_phase ?? ""] ?? -1;
   const catalogs = match.card_catalogs ?? {};
   const getCard = (characterId: number, cardId: number) => catalogs[String(characterId)]?.find((card) => card.card_id === cardId);
   const lastCard = props.lastPlayed ? getCard(props.lastPlayed.character_id, props.lastPlayed.card_id) : null;
   const creatures = me.statuses.hand_creatures.filter((creature) => creature.card_id !== 26);
 
+  const toggleDiscard = (index: number) => {
+    const discardable = match.you.card_discardable?.[index] ?? ![49, 50].includes(match.you.hand_cards[index]);
+    if (!discardable) return;
+    setDiscardDraft((current) => {
+      const currentIndexes = current.revision === match.revision && current.activePlayerId === match.active_player_id ? current.indexes : [];
+      return {
+        revision: match.revision,
+        activePlayerId: match.active_player_id,
+        mode: true,
+        indexes: toggleLimitedIndex(currentIndexes, index, match.you.hand_cards.length),
+      };
+    });
+  };
+
+  const startDiscard = () => setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: true, indexes: [] });
+  const clearDiscard = () => setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: inDiscard, indexes: [] });
+
+  const confirmDiscard = () => {
+    if (!discardSelection.length) return;
+    props.send("discard_cards", { indexes: [...discardSelection].sort((left, right) => left - right) });
+  };
+
   return (
     <main className="match-shell">
-      <header className="match-topbar"><Brand connection={props.connection} compact /><div className="turn-track">{phases.map((phase, index) => <div key={phase} className={`${index === currentPhase ? "active" : ""} ${index < currentPhase ? "done" : ""}`}><span>{index + 1}</span><b>{phase}</b></div>)}</div><div className="round-chip"><small>ROUND</small><strong>{String(match.round_number).padStart(2, "0")}</strong></div></header>
+      <header className="match-topbar"><Brand connection={props.connection} compact /><div className="turn-track">{phases.map((phase, index) => <div key={phase} className={`${index === currentPhase ? "active" : ""} ${index < currentPhase ? "done" : ""}`}><span>{index + 1}</span><GameTooltip className="phase-name" explanation={phaseExplanation(phase)}><b>{phase}</b></GameTooltip></div>)}</div><GameTooltip className="round-tooltip" explanation={{ title: "轮次", description: "双方各完成一个回合后，轮次增加。新轮次会重新分配双方能量。" }}><span className="round-chip"><small>ROUND</small><strong>{String(match.round_number).padStart(2, "0")}</strong></span></GameTooltip></header>
 
       <section className="opponent-zone">
         <PlayerStatus label={`玩家 ${opponentId}`} character={opponentCharacter} player={opponent} active={match.active_player_id === opponentId} />
@@ -506,8 +566,23 @@ function MatchScreen(props: {
       <section className="player-zone">
         <PlayerStatus label={`玩家 ${match.player_id} · 你`} character={myCharacter} player={me} active={myTurn} />
         <div className="hand-stage">
-          <div className="hand-toolbar"><div><Pile label="抽牌" count={match.you.draw_count} /><Pile label="弃牌" count={match.you.discard_count} /></div><span>{match.you.hand_cards.length} / {match.hand_limit} 手牌</span><button type="button" disabled={!myTurn || match.pending_choice || (!inPlay && !inDiscard)} onClick={() => props.send("end_turn")}>结束回合 <b>→</b></button></div>
-          <div className="hand-cards">{match.you.hand_cards.map((cardId, index) => { const card = getCard(myCharacter, cardId); const cost = match.you.card_costs?.[index] ?? card?.cost ?? null; return <button className="hand-card-button" key={`${cardId}-${index}`} type="button" disabled={!myTurn || match.pending_choice || (!inPlay && !inDiscard)} onClick={() => props.send(inDiscard ? "discard_card" : "play_card", inDiscard ? { index } : { source: "hand", index })}><GameCard card={card} cardId={cardId} cost={cost} index={index} discard={inDiscard} /></button>; })}</div>
+          <div className="hand-toolbar">
+            <div><Pile label="抽牌" count={match.you.draw_count} /><Pile label="弃牌" count={match.you.discard_count} /></div>
+            <GameTooltip className="hand-limit-tooltip" explanation={GAME_TERMS.handLimit}><span>{effectiveHandSize} / {match.hand_limit} 有效手牌{excessCards > 0 && <em>还需弃 {excessCards} 张</em>}</span></GameTooltip>
+            <div className="hand-actions">
+              {!selectingDiscard && <button type="button" className="discard-toggle" disabled={!myTurn || match.pending_choice || !inPlay} onClick={startDiscard}>选择弃牌</button>}
+              {selectingDiscard && <button type="button" className="discard-toggle" disabled={inDiscard && discardSelection.length === 0} onClick={clearDiscard}>{inDiscard ? "清空选择" : "取消弃牌"}</button>}
+              {selectingDiscard && <button type="button" className="discard-confirm" disabled={!myTurn || match.pending_choice || discardSelection.length === 0} onClick={confirmDiscard}>确认弃置 {discardSelection.length} 张</button>}
+              <button type="button" className="turn-end" disabled={!myTurn || match.pending_choice || (!inPlay && !inDiscard) || excessCards > 0 || discardSelection.length > 0} onClick={() => props.send("end_turn")}>{excessCards > 0 ? `还需弃 ${excessCards} 张` : "结束回合"} <b>→</b></button>
+            </div>
+          </div>
+          <div className={`hand-cards ${selectingDiscard ? "selecting-discard" : ""}`}>{match.you.hand_cards.map((cardId, index) => {
+            const card = getCard(myCharacter, cardId);
+            const cost = match.you.card_costs?.[index] ?? card?.cost ?? null;
+            const discardable = match.you.card_discardable?.[index] ?? ![49, 50].includes(cardId);
+            const selected = discardSelection.includes(index);
+            return <button aria-pressed={selectingDiscard ? selected : undefined} className={`hand-card-button ${selected ? "discard-selected" : ""}`} key={`${cardId}-${index}`} type="button" disabled={!myTurn || match.pending_choice || (selectingDiscard ? !discardable : !inPlay)} onClick={() => selectingDiscard ? toggleDiscard(index) : props.send("play_card", { source: "hand", index })}><GameCard card={card} cardId={cardId} cost={cost} index={index} discardState={selectingDiscard ? selected ? "selected" : discardable ? "available" : "blocked" : "none"} /></button>;
+          })}</div>
         </div>
         <LogPanel logs={props.logs} chatText={props.chatText} setChatText={props.setChatText} submitChat={props.submitChat} />
       </section>
@@ -518,22 +593,64 @@ function MatchScreen(props: {
 
 function PlayerStatus({ label, character, player, active }: { label: string; character: number; player: PublicPlayer; active: boolean }) {
   const name = character === 1 ? "战士" : character === 4 ? "蛞蝓猫" : `角色 ${character}`;
-  const detail = Object.entries(player.character_data ?? {}).filter(([, value]) => typeof value === "number").slice(0, 3);
-  return <div className={`player-status ${active ? "active" : ""}`}><div className={`avatar char-${character}`}>{character === 1 ? "战" : "猫"}</div><div className="identity"><small>{label}</small><strong>{name}</strong><span>{detail.map(([key, value]) => `${statusName(key)} ${value}`).join(" · ")}</span></div><Stat icon="♥" value={player.health} tone="health" /><Stat icon="◆" value={player.energy} tone="energy" /><Stat icon="⬟" value={player.defence} tone="defence" /><Stat icon="↑" value={player.strength} tone="strength" /></div>;
+  const data = player.character_data ?? {};
+  const maxHealth = Math.max(1, player.max_health ?? (character === 4 ? 5 : 30));
+  const healthPercent = Math.max(0, Math.min(100, player.health / maxHealth * 100));
+  const healthTone = healthPercent <= 25 ? "critical" : healthPercent <= 50 ? "wounded" : "healthy";
+  const detail = Object.entries(data)
+    .filter(([key, value]) => typeof value === "number" && statusExplanation(key))
+    .map(([key, value]) => ({
+      key,
+      value: key === "karma" && typeof data.karma_max === "number" ? `${value}/${data.karma_max}` : String(value),
+    }));
+  if (typeof data.form === "string") detail.unshift({ key: "form", value: data.form });
+  return (
+    <div className={`player-status ${active ? "active" : ""}`}>
+      <div className="player-identity">
+        <div className={`avatar char-${character}`}>{character === 1 ? "战" : "猫"}</div>
+        <div className="identity"><small>{label}</small><strong>{name}</strong></div>
+      </div>
+      <GameTooltip className="energy-core" explanation={{ ...GAME_TERMS.energy, description: `当前拥有 ${player.energy} 点能量。${GAME_TERMS.energy.description}` }}>
+        <span className="energy-glyph">◆</span><span className="energy-copy"><small>能量</small><strong>{player.energy}</strong></span>
+      </GameTooltip>
+      <div className="secondary-stats">
+        <Stat icon="⬟" label="防御" value={player.defence} tone="defence" explanation={GAME_TERMS.defence} />
+        <Stat icon="↑" label="力量" value={player.strength} tone="strength" explanation={GAME_TERMS.strength} />
+        {player.poison > 0 && <Stat icon="●" label="中毒" value={player.poison} tone="poison" explanation={GAME_TERMS.poison} />}
+      </div>
+      <GameTooltip className={`health-vital ${healthTone}`} explanation={{ ...GAME_TERMS.health, description: `当前生命为 ${player.health}/${maxHealth}。${GAME_TERMS.health.description}` }}>
+        <span className="health-heading"><span><b>♥</b> 生命</span><strong>{player.health}<i>/{maxHealth}</i></strong></span>
+        <span className="health-track" role="meter" aria-label={`${name}生命`} aria-valuemin={0} aria-valuemax={maxHealth} aria-valuenow={Math.max(0, Math.min(maxHealth, player.health))}>
+          <span className="health-fill" style={{ width: `${healthPercent}%` }} />
+        </span>
+      </GameTooltip>
+      {detail.length > 0 && <div className="status-detail-list">{detail.map(({ key, value }) => <GameTooltip key={key} explanation={statusExplanation(key) ?? GAME_TERMS.poison}><span className="status-detail"><small>{statusName(key)}</small><strong>{value}</strong></span></GameTooltip>)}</div>}
+    </div>
+  );
 }
 
-function Stat({ icon, value, tone }: { icon: string; value: number; tone: string }) { return <div className={`stat ${tone}`}><span>{icon}</span><strong>{value}</strong></div>; }
-function Pile({ label, count }: { label: string; count: number }) { return <div className="pile"><span>{label}</span><strong>{count}</strong></div>; }
-function statusName(key: string) { return ({ karma: "业力", satiety: "饱食", agility: "敏捷", momentum: "动能", sacrifice_layers: "献祭", heartlink_layers: "心连心" } as Record<string, string>)[key] ?? key; }
+function Stat({ icon, label, value, tone, explanation }: { icon: string; label: string; value: number; tone: string; explanation: GameExplanation }) { return <GameTooltip className={`stat ${tone}`} explanation={explanation}><span className="stat-icon">{icon}</span><span className="stat-copy"><small>{label}</small><strong>{value}</strong></span></GameTooltip>; }
+function Pile({ label, count }: { label: string; count: number }) { return <GameTooltip className="pile-tooltip" explanation={label === "抽牌" ? GAME_TERMS.drawPile : GAME_TERMS.discardPile}><span className="pile"><span>{label}</span><strong>{count}</strong></span></GameTooltip>; }
+function statusName(key: string) { return ({ form: "形态", karma: "业力", satiety: "饱食", agility: "敏捷", momentum: "动能", sacrifice_layers: "献祭", heartlink_layers: "心连心" } as Record<string, string>)[key] ?? key; }
+
+function RuleText({ text }: { text: string }) {
+  return <>{text.split(inlineRulePattern).map((part, index) => {
+    const entry = INLINE_RULE_TERMS.find(({ term }) => term === part);
+    return entry
+      ? <GameTooltip key={`${part}-${index}`} focusable={false} className="rule-keyword" explanation={entry.explanation}><span>{part}</span></GameTooltip>
+      : part;
+  })}</>;
+}
 
 function cardTone(type = "卡牌") { return type.includes("物品") ? "item" : type.includes("生物") ? "creature" : type.includes("见闻") ? "discovery" : type.includes("技能") ? "skill" : "attack"; }
 
-function GameCard({ card, cardId, cost, index, discard }: { card?: CardDefinition; cardId: number; cost: number | null; index: number; discard: boolean }) {
-  return <article className={`game-card ${cardTone(card?.card_type)} ${discard ? "discard-mode" : ""}`}><div className="card-top"><span>{card?.card_type ?? "卡牌"}</span><b>{cost ?? "—"}</b></div><div className="card-art"><span>{card?.name?.slice(0, 1) ?? "?"}</span></div><div className="card-copy"><strong>{card?.name ?? `卡牌 ${cardId}`}</strong><p>{card?.description || "暂无卡牌说明"}</p></div><small>#{String(index + 1).padStart(2, "0")} · ID {cardId}</small>{discard && <em>点击弃置</em>}</article>;
+function GameCard({ card, cardId, cost, index, discardState }: { card?: CardDefinition; cardId: number; cost: number | null; index: number; discardState: "none" | "available" | "selected" | "blocked" }) {
+  const cardType = card?.card_type ?? "卡牌";
+  return <article className={`game-card ${cardTone(cardType)} ${discardState !== "none" ? "discard-mode" : ""} ${discardState === "selected" ? "discard-selected" : ""}`}><div className="card-top"><GameTooltip focusable={false} className="card-type-tooltip" explanation={cardTypeExplanation(cardType)}><span>{cardType}</span></GameTooltip><div className="card-flags">{card?.exhausted && <GameTooltip focusable={false} className="exhaust-tooltip" explanation={GAME_TERMS.exhaust}><span>消耗</span></GameTooltip>}<GameTooltip focusable={false} className="card-cost-tooltip" explanation={cardCostExplanation(cost, card?.cost)}><b>{cost ?? "—"}</b></GameTooltip></div></div><div className="card-art"><span>{card?.name?.slice(0, 1) ?? "?"}</span></div><div className="card-copy"><strong>{card?.name ?? `卡牌 ${cardId}`}</strong><p><RuleText text={card?.description || "暂无卡牌说明"} /></p></div><small>#{String(index + 1).padStart(2, "0")} · ID {cardId}</small>{discardState !== "none" && <em>{discardState === "selected" ? "− 退回" : discardState === "blocked" ? "不可弃置" : "+ 选择弃置"}</em>}</article>;
 }
 
-function MiniCard({ card, cost }: { card: CardDefinition; cost: number | null }) { return <div className={`mini-card ${cardTone(card.card_type)}`}><b>{cost ?? "—"}</b><span>{card.card_type}</span><strong>{card.name}</strong></div>; }
-function CreatureChip({ creature, card }: { creature: Creature; card?: CardDefinition }) { return <div className="creature-chip"><span>{card?.name?.slice(0, 1) ?? "生"}</span><div><strong>{card?.name ?? `生物 ${creature.card_id}`}</strong><small>♥ {creature.health}{creature.shell === false ? " · 破甲" : ""}</small></div></div>; }
+function MiniCard({ card, cost }: { card: CardDefinition; cost: number | null }) { return <div className={`mini-card ${cardTone(card.card_type)}`}><GameTooltip focusable={false} className="mini-card-cost" explanation={cardCostExplanation(cost, card.cost)}><b>{cost ?? "—"}</b></GameTooltip><GameTooltip focusable={false} explanation={cardTypeExplanation(card.card_type)}><span>{card.card_type}</span></GameTooltip><strong>{card.name}</strong></div>; }
+function CreatureChip({ creature, card }: { creature: Creature; card?: CardDefinition }) { return <div className="creature-chip"><span>{card?.name?.slice(0, 1) ?? "生"}</span><div><strong>{card?.name ?? `生物 ${creature.card_id}`}</strong><GameTooltip focusable={false} explanation={GAME_TERMS.creatureHealth}><small>♥ {creature.health}{creature.shell === false ? " · 破甲" : ""}</small></GameTooltip></div></div>; }
 
 function LogPanel({ logs, chatText, setChatText, submitChat, compact = false }: { logs: LogEntry[]; chatText: string; setChatText: (value: string) => void; submitChat: (event: FormEvent) => void; compact?: boolean }) {
   const endRef = useRef<HTMLDivElement | null>(null);
@@ -548,15 +665,23 @@ function ChoiceDialog({ pending, value, setValue, selected, setSelected, match, 
   const myCharacter = match.character_ids[String(match.player_id)];
   const catalog = match.card_catalogs?.[String(myCharacter)] ?? [];
   const cardById = (id: number) => catalog.find((card) => card.card_id === id);
+  const integerMinimum = prompt.minimum ?? 0;
+  const integerMaximum = prompt.maximum ?? integerMinimum;
+  const integerValue = Number(value ?? prompt.default ?? integerMinimum);
+  const setInteger = (nextValue: number) => setValue(Math.max(integerMinimum, Math.min(integerMaximum, nextValue)));
+  const choiceComplete = prompt.kind === "integer"
+    ? Number.isInteger(integerValue) && integerValue >= integerMinimum && integerValue <= integerMaximum
+    : prompt.kind === "option"
+      ? prompt.options?.includes(String(value)) === true
+      : selected.length === (prompt.count ?? 0);
   const toggleIndex = (index: number) => {
-    if (selected.includes(index)) setSelected(selected.filter((item) => item !== index));
-    else if (selected.length < (prompt.count ?? 0)) setSelected([...selected, index]);
+    setSelected(toggleLimitedIndex(selected, index, prompt.count ?? 0));
   };
-  return <div className="modal-backdrop"><section className="choice-dialog" role="dialog" aria-modal="true" aria-labelledby="choice-title"><p className="eyebrow">ACTION REQUIRED</p><h2 id="choice-title">{prompt.title}</h2><p>{prompt.prompt}</p>
-    {prompt.kind === "integer" && <div className="integer-choice"><input type="range" min={prompt.minimum} max={prompt.maximum} value={Number(value ?? prompt.minimum)} onChange={(event) => setValue(Number(event.target.value))} /><strong>{value}</strong><div><span>{prompt.minimum}</span><span>{prompt.maximum}</span></div></div>}
+  return <div className="modal-backdrop"><section className="choice-dialog" role="dialog" aria-modal="true" aria-labelledby="choice-title"><p className="eyebrow">ACTION REQUIRED</p><h2 id="choice-title">{prompt.title}</h2><p><RuleText text={prompt.prompt} /></p>
+    {prompt.kind === "integer" && <div className="integer-choice"><div className="integer-stepper"><button type="button" aria-label="减少选择数" disabled={integerValue <= integerMinimum} onClick={() => setInteger(integerValue - 1)}>−</button><strong>{integerValue}</strong><button type="button" aria-label="增加选择数" disabled={integerValue >= integerMaximum} onClick={() => setInteger(integerValue + 1)}>+</button></div><input aria-label={prompt.prompt} type="range" min={integerMinimum} max={integerMaximum} value={integerValue} onChange={(event) => setInteger(Number(event.target.value))} /><div><span>{integerMinimum}</span><span>{integerMaximum}</span></div></div>}
     {prompt.kind === "option" && <div className="option-choice">{prompt.options?.map((option) => <button className={value === option ? "selected" : ""} type="button" key={option} onClick={() => setValue(option)}>{option}</button>)}</div>}
-    {prompt.kind === "card_indexes" && <div className="choice-cards">{prompt.hand?.map((cardId, index) => { const disabled = cardId === prompt.excluded_card_id; return <button type="button" key={`${cardId}-${index}`} disabled={disabled} className={selected.includes(index) ? "selected" : ""} onClick={() => toggleIndex(index)}><span>{cardById(cardId)?.name ?? `卡牌 ${cardId}`}</span><small>索引 {index + 1}{disabled ? " · 不可选" : ""}</small></button>; })}</div>}
-    <footer><button type="button" className="ghost-action" onClick={cancel}>取消动作</button><button type="button" className="primary-action" disabled={prompt.kind === "card_indexes" && selected.length !== prompt.count} onClick={() => resolve(prompt.kind === "card_indexes" ? selected : value)}>确认选择 <span>→</span></button></footer>
+    {prompt.kind === "card_indexes" && <><div className="choice-progress"><span>已选择 {selected.length} / {prompt.count ?? 0}</span><small>再次点击带“−”的卡牌即可退回</small></div><div className="choice-cards">{prompt.hand?.map((cardId, index) => { const excluded = cardId === prompt.excluded_card_id; const isSelected = selected.includes(index); const limitReached = selected.length >= (prompt.count ?? 0); return <button aria-pressed={isSelected} type="button" key={`${cardId}-${index}`} disabled={excluded || (!isSelected && limitReached)} className={isSelected ? "selected" : ""} onClick={() => toggleIndex(index)}><span>{cardById(cardId)?.name ?? `卡牌 ${cardId}`}</span><small>索引 {index + 1}{excluded ? " · 不可选" : ""}</small><b>{isSelected ? "− 退回" : "+ 选择"}</b></button>; })}</div></>}
+    <footer><button type="button" className="ghost-action" onClick={cancel}>取消动作</button><button type="button" className="primary-action" disabled={!choiceComplete} onClick={() => resolve(prompt.kind === "card_indexes" ? selected : prompt.kind === "integer" ? integerValue : value)}>确认选择 <span>→</span></button></footer>
   </section></div>;
 }
 

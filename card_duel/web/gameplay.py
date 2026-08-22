@@ -278,21 +278,39 @@ def play_card(
 def discard_card(
     room: MatchRoomPort, player_id: int, data: dict[str, Any]
 ) -> ActionLog:
-    state, _combat = _require_active(room, player_id)
-    if state.current_phase == TurnPhase.PLAY.value:
-        state.current_phase = TurnPhase.DISCARD.value
-    elif state.current_phase != TurnPhase.DISCARD.value:
-        raise ActionError("wrong_phase", "当前不能弃牌")
     index = _required_index(data)
-    if index >= len(state.hand_cards):
+    return _discard_indexes(room, player_id, [index])
+
+
+def discard_cards(
+    room: MatchRoomPort, player_id: int, data: dict[str, Any]
+) -> ActionLog:
+    """Atomically discard a staged selection without index-shift races."""
+    return _discard_indexes(room, player_id, _required_indexes(data))
+
+
+def _discard_indexes(
+    room: MatchRoomPort, player_id: int, indexes: list[int]
+) -> ActionLog:
+    state, _combat = _require_active(room, player_id)
+    if state.current_phase not in {TurnPhase.PLAY.value, TurnPhase.DISCARD.value}:
+        raise ActionError("wrong_phase", "当前不能弃牌")
+    if any(index >= len(state.hand_cards) for index in indexes):
         raise ActionError("invalid_card", "手牌索引超出范围")
-    card_id = state.hand_cards[index]
-    if not can_discard(state, player_id, card_id):
+    if any(
+        not can_discard(state, player_id, state.hand_cards[index])
+        for index in indexes
+    ):
         raise ActionError("card_not_discardable", "生物牌和插入物不可弃置")
-    state.hand_cards.pop(index)
-    return_card_after_use(state, player_id, card_id)
+
+    state.current_phase = TurnPhase.DISCARD.value
+    discarded_card_ids = [state.hand_cards[index] for index in indexes]
+    for index in sorted(indexes, reverse=True):
+        state.hand_cards.pop(index)
+    for card_id in discarded_card_ids:
+        return_card_after_use(state, player_id, card_id)
     _sync_zone(room, player_id)
-    return ActionLog(announcements=[f"玩家{player_id}弃掉一张牌"])
+    return ActionLog(announcements=[f"玩家{player_id}弃掉{len(indexes)}张牌"])
 
 
 def end_turn(
@@ -460,6 +478,20 @@ def _required_index(data: dict[str, Any]) -> int:
     if isinstance(index, bool) or not isinstance(index, int) or index < 0:
         raise ActionError("invalid_card", "index 必须是非负整数")
     return index
+
+
+def _required_indexes(data: dict[str, Any]) -> list[int]:
+    indexes = data.get("indexes")
+    if not isinstance(indexes, list) or not indexes:
+        raise ActionError("invalid_card", "indexes 必须是非空索引数组")
+    if any(
+        isinstance(index, bool) or not isinstance(index, int) or index < 0
+        for index in indexes
+    ):
+        raise ActionError("invalid_card", "indexes 必须只包含非负整数")
+    if len(set(indexes)) != len(indexes):
+        raise ActionError("invalid_card", "indexes 不能包含重复索引")
+    return indexes
 
 
 def _opponent(player_id: int) -> int:

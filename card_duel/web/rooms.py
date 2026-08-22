@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from card_duel.application.combat import CombatEngine
+from card_duel.application.turns import HAND_LIMIT, can_discard, effective_hand_size
 from card_duel.cards.catalog import DEFAULT_REGISTRY
 from card_duel.cards.registry import CardRegistry
 from card_duel.core.models import CharacterState, GameState
@@ -22,6 +23,7 @@ from card_duel.web.gameplay import (
     SubmittedChoiceProvider,
     begin_turn,
     discard_card,
+    discard_cards,
     end_turn,
     play_card,
 )
@@ -200,6 +202,7 @@ class RoomManager:
             "leave_room": self._leave_room,
             "play_card": self._play_card,
             "discard_card": self._discard_card,
+            "discard_cards": self._discard_cards,
             "end_turn": self._end_turn,
             "resolve_choice": self._resolve_choice,
             "cancel_choice": self._cancel_choice,
@@ -354,10 +357,25 @@ class RoomManager:
     def _discard_card(
         self, connection: ClientConnection, data: dict[str, Any]
     ) -> list[Delivery]:
+        return self._run_discard_action(connection, data, multiple=False)
+
+    def _discard_cards(
+        self, connection: ClientConnection, data: dict[str, Any]
+    ) -> list[Delivery]:
+        return self._run_discard_action(connection, data, multiple=True)
+
+    def _run_discard_action(
+        self,
+        connection: ClientConnection,
+        data: dict[str, Any],
+        *,
+        multiple: bool,
+    ) -> list[Delivery]:
         room, _slot = self._require_playing_player(connection)
         snapshot = self._snapshot(room)
         try:
-            log = discard_card(room, connection.player_id, data)
+            handler = discard_cards if multiple else discard_card
+            log = handler(room, connection.player_id, data)
         except Exception:
             self._restore(room, snapshot)
             raise
@@ -472,10 +490,16 @@ class RoomManager:
             raise ActionError("not_in_room", "当前不在房间中")
         room = self.rooms.get(connection.room_code)
         player_id = connection.player_id
+        room_code = connection.room_code
         connection.room_code = None
         connection.player_id = None
+        left_delivery = (
+            []
+            if disconnected
+            else [(connection, event("room_left", room_code=room_code))]
+        )
         if room is None:
-            return []
+            return left_delivery
 
         room.players.pop(player_id, None)
         if player_id == 1 or room.status == "playing":
@@ -496,10 +520,10 @@ class RoomManager:
                         ),
                     )
                 )
-            return deliveries
+            return [*left_delivery, *deliveries]
 
         self._reset_readiness(room)
-        return self._room_state_deliveries(room)
+        return [*left_delivery, *self._room_state_deliveries(room)]
 
     def _new_room_code(self) -> str:
         for _ in range(100):
@@ -696,11 +720,18 @@ class RoomManager:
             "active_player_id": state.active_player_id,
             "current_phase": state.current_phase,
             "game_over": state.game_over,
-            "hand_limit": 4,
+            "hand_limit": HAND_LIMIT,
             "pending_choice": room.pending_action is not None,
             "you": {
                 "hand_cards": list(own_zone.hand),
                 "card_costs": self._card_costs(state, player_id, own_zone.hand),
+                "card_discardable": [
+                    can_discard(state, player_id, card_id)
+                    for card_id in own_zone.hand
+                ],
+                "effective_hand_size": effective_hand_size(
+                    state, player_id, own_zone.hand
+                ),
                 "draw_count": len(own_zone.draw_pile),
                 "discard_count": len(own_zone.discard_pile),
             },

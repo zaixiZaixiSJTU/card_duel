@@ -20,7 +20,8 @@ class WebAppTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("Card Duel Web API", response.text)
-        self.assertIn("游戏 Web 前端尚未接入", response.text)
+        self.assertIn("浏览器前端在独立的", response.text)
+        self.assertIn("原子弃牌", response.text)
         self.assertEqual(favicon.status_code, 204)
 
     async def test_health_endpoint(self):

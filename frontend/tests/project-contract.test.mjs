@@ -38,16 +38,49 @@ test("keeps the WebSocket protocol contract and safe deployment defaults", async
   assert.match(gameClient, /请输入完整的 ws:\/\/ 或 wss:\/\/ 后端地址/);
   assert.doesNotMatch(gameClient, /useEffect\(\(\) => endRef/);
   assert.match(gameClient, /useEffect\(\(\) => \{\s+endRef\.current/);
+  assert.match(gameClient, /if \(!nextMatch\.pending_choice\)/);
+  assert.match(gameClient, /aria-label="减少选择数"/);
+  assert.match(gameClient, /aria-label="增加选择数"/);
   for (const action of [
     "create_room",
     "join_room",
+    "leave_room",
     "select_character",
     "set_ready",
     "play_card",
-    "discard_card",
+    "discard_cards",
     "end_turn",
     "resolve_choice",
   ]) {
     assert.match(gameClient, new RegExp(`"${action}"`));
   }
+  assert.match(gameClient, /case "room_left"/);
+});
+
+test("keeps game explanations centralized and accessible", async () => {
+  const [gameClient, terms, tooltip, styles] = await Promise.all([
+    readFile(new URL("app/game-client.tsx", root), "utf8"),
+    readFile(new URL("app/game-terms.ts", root), "utf8"),
+    readFile(new URL("app/components/game-tooltip.tsx", root), "utf8"),
+    readFile(new URL("app/globals.css", root), "utf8"),
+  ]);
+
+  for (const term of ["生命", "能量", "防御", "力量", "有效手牌", "抽牌堆", "消耗"]) {
+    assert.match(terms, new RegExp(`title: "${term}"`));
+  }
+  assert.match(gameClient, /cardCostExplanation\(cost, card\?\.cost\)/);
+  assert.match(gameClient, /statusExplanation\(key\)/);
+  assert.match(gameClient, /<RuleText text=\{card\?\.description/);
+  assert.match(gameClient, /max_health\?: number/);
+  assert.match(gameClient, /className="energy-core"/);
+  assert.match(gameClient, /className="health-track" role="meter"/);
+  assert.match(terms, /INLINE_RULE_TERMS/);
+  assert.match(tooltip, /createPortal/);
+  assert.match(tooltip, /role="tooltip"/);
+  assert.match(tooltip, /aria-describedby=/);
+  assert.match(tooltip, /event\.key === "Escape"/);
+  assert.match(styles, /\.game-tooltip-panel/);
+  assert.match(styles, /\.health-fill/);
+  assert.match(styles, /\.game-tooltip-anchor\.energy-core/);
+  assert.match(styles, /z-index: 1000/);
 });

@@ -60,6 +60,7 @@ class CharacterState:
     """Mutable public combat values for one player."""
 
     health: int = 30
+    max_health: int = 30
     energy: int = 0
     strength: int = 0
     poison: int = 0

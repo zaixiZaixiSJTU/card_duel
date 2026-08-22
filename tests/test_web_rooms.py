@@ -160,8 +160,20 @@ class RoomManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("hand_cards", host_state["opponent"])
         self.assertNotIn("hand_cards", guest_state["opponent"])
         self.assertEqual(host_state["card_catalogs"]["1"][1]["name"], "攻")
+        self.assertEqual(host_state["players"]["1"]["health"], 30)
+        self.assertEqual(host_state["players"]["1"]["max_health"], 30)
+        self.assertEqual(guest_state["players"]["2"]["health"], 5)
+        self.assertEqual(guest_state["players"]["2"]["max_health"], 5)
         self.assertEqual(
             len(host_state["you"]["card_costs"]),
+            len(host_state["you"]["hand_cards"]),
+        )
+        self.assertEqual(
+            len(host_state["you"]["card_discardable"]),
+            len(host_state["you"]["hand_cards"]),
+        )
+        self.assertEqual(
+            host_state["you"]["effective_hand_size"],
             len(host_state["you"]["hand_cards"]),
         )
         self.assertNotIn(
@@ -177,6 +189,32 @@ class RoomManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(room_state["status"], "lobby")
         self.assertEqual(len(room_state["players"]), 1)
         self.assertIn(code, self.manager.rooms)
+
+    async def test_guest_can_leave_lobby_and_return_to_entry(self):
+        code = await self.create_and_join()
+
+        await self.manager.handle(
+            self.guest_id, {"action": "leave_room", "data": {}}
+        )
+
+        self.assertEqual(
+            self.guest.pop("room_left")["data"]["room_code"], code
+        )
+        room_state = self.host.pop("room_state")["data"]["room"]
+        self.assertEqual([player["player_id"] for player in room_state["players"]], [1])
+        self.assertIsNone(self.manager.connections[self.guest_id].room_code)
+
+    async def test_host_can_leave_and_receives_its_own_acknowledgement(self):
+        code = await self.create_and_join()
+
+        await self.manager.handle(
+            self.host_id, {"action": "leave_room", "data": {}}
+        )
+
+        self.assertEqual(self.host.pop("room_left")["data"]["room_code"], code)
+        self.assertEqual(self.guest.pop("room_closed")["data"]["room_code"], code)
+        self.assertNotIn(code, self.manager.rooms)
+        self.assertIsNone(self.manager.connections[self.host_id].room_code)
 
     async def test_host_disconnect_closes_room_for_guest(self):
         code = await self.create_and_join()
@@ -259,6 +297,39 @@ class RoomManagerTests(unittest.IsolatedAsyncioTestCase):
         self.host.pop("state")
         self.guest.pop("state")
 
+    async def test_staged_cards_are_discarded_atomically_from_play_phase(self):
+        room = await self.start_warrior_match()
+        room.card_zones[1].hand[:] = [1, 2, 3, 4, 5, 6]
+        revision = room.revision
+
+        await self.manager.handle(
+            self.host_id,
+            {"action": "discard_cards", "data": {"indexes": [1, 4]}},
+        )
+
+        self.assertEqual(room.state.current_phase, "弃牌阶段")
+        self.assertEqual(room.card_zones[1].hand, [1, 3, 4, 6])
+        self.assertEqual(room.card_zones[1].discard_pile[-2:], [2, 5])
+        self.assertEqual(room.revision, revision + 1)
+        state = self.host.pop("state")["data"]["state"]
+        self.assertEqual(state["you"]["effective_hand_size"], 4)
+
+    async def test_invalid_staged_discard_rolls_back_the_whole_selection(self):
+        room = await self.start_warrior_match()
+        room.card_zones[1].hand[:] = [1, 49, 2]
+        revision = room.revision
+
+        await self.manager.handle(
+            self.host_id,
+            {"action": "discard_cards", "data": {"indexes": [0, 1]}},
+        )
+
+        error = self.host.pop("error")
+        self.assertEqual(error["data"]["code"], "card_not_discardable")
+        self.assertEqual(room.card_zones[1].hand, [1, 49, 2])
+        self.assertEqual(room.state.current_phase, "出牌阶段")
+        self.assertEqual(room.revision, revision)
+
     async def test_choice_required_rolls_back_then_resolves_card_atomically(self):
         room = await self.start_warrior_match()
         room.card_zones[1].hand[:] = [8]
@@ -291,6 +362,36 @@ class RoomManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(room.pending_action)
         self.host.pop("state")
         self.guest.pop("state")
+
+    async def test_cancel_choice_restores_action_snapshot_and_clears_pending(self):
+        room = await self.start_warrior_match()
+        room.card_zones[1].hand[:] = [8]
+        revision = room.revision
+
+        await self.manager.handle(
+            self.host_id,
+            {"action": "play_card", "data": {"index": 0}},
+        )
+        required = self.host.pop("choice_required")
+
+        await self.manager.handle(
+            self.host_id,
+            {
+                "action": "cancel_choice",
+                "data": {"choice_id": required["data"]["choice_id"]},
+            },
+        )
+
+        self.assertEqual(
+            self.host.pop("choice_cancelled")["data"]["choice_id"],
+            required["data"]["choice_id"],
+        )
+        self.assertEqual(room.card_zones[1].hand, [8])
+        self.assertEqual(room.state.players[1].health, 30)
+        self.assertEqual(room.revision, revision)
+        self.assertIsNone(room.pending_action)
+        state = self.host.pop("state")["data"]["state"]
+        self.assertFalse(state["pending_choice"])
 
     async def test_multi_step_choice_retries_from_clean_snapshot(self):
         room = await self.start_warrior_match()

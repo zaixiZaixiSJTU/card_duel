@@ -27,7 +27,7 @@ class SlugcatRules:
         return SlugcatData()
 
     def initialize(self, player) -> None:
-        player.health = SLUGCAT_HEALTH
+        player.health = player.max_health = SLUGCAT_HEALTH
 
     def register_turn_handlers(self, turn, combat) -> None:
         def on_turn_start(context):
@@ -116,7 +116,7 @@ class SlugcatRules:
         data = slugcat_data(player)
         data.karma = max(0, data.karma - 1)
         if data.karma > 0:
-            player.health = SLUGCAT_HEALTH
+            player.health = player.max_health
             if announce:
                 announce(f"玩家{player_id}消耗1点业力重返雨中（业力{data.karma}）")
         else:

@@ -135,6 +135,7 @@ def send_game_state(session) -> None:
         str(player_id): {
             "energy": player.energy,
             "health": player.health,
+            "max_health": player.max_health,
             "strength": player.strength,
             "poison": player.poison,
             "statuses": _dataclass_payload(player.statuses),
@@ -193,6 +194,7 @@ def _apply_state_message(session, message) -> None:
         values = player_payloads[str(player_id)]
         player.energy = values["energy"]
         player.health = values["health"]
+        player.max_health = values.get("max_health", player.max_health)
         player.strength = values["strength"]
         player.poison = values["poison"]
         _apply_dataclass_values(player.statuses, values["statuses"])

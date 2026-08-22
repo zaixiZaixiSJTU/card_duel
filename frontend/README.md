@@ -3,6 +3,11 @@
 Card Duel 的标准 Next.js 浏览器客户端。页面只发送玩家动作；房间、回合、伤害、
 资源和卡牌效果均由独立的 Python WebSocket 服务权威结算。
 
+牌桌中的属性、角色状态、回合阶段、牌堆、卡牌类型、当前费用和消耗标记均提供
+统一规则提示：鼠标悬停即可查看，使用键盘时可通过 `Tab` 聚焦并按 `Esc` 收起。
+属性的视觉层级、公开范围和新增效果步骤见
+[状态显示与新效果开发工作流](../docs/STATUS_EFFECT_WORKFLOW.md)。
+
 ## 本地开发
 
 需要 Node.js 20.9+。先在项目根目录启动后端：
@@ -15,8 +20,8 @@ Card Duel 的标准 Next.js 浏览器客户端。页面只发送玩家动作；�
 
 ```bash
 cd frontend
-npm install
-npm run dev
+pnpm install --frozen-lockfile
+pnpm dev
 ```
 
 访问 `http://localhost:3000`。本地默认连接
@@ -37,9 +42,9 @@ HTTPS 前端必须连接 `wss://` 后端，否则浏览器会阻止混合内容�
 ## 检查
 
 ```bash
-npm run lint
-npm test
-npm run build
+pnpm lint
+pnpm test
+pnpm build
 ```
 
 生产构建输出为标准 `.next/`，首页会被静态预渲染。
@@ -49,9 +54,9 @@ npm run build
 任何支持 Next.js 16 / Node.js 20.9+ 的平台均可部署：
 
 - 项目根目录：`frontend`
-- 安装命令：`npm install`（或按 `pnpm-lock.yaml` 使用 `pnpm install`）
-- 构建命令：`npm run build`
-- 启动命令（自托管平台）：`npm run start`
+- 安装命令：`pnpm install --frozen-lockfile`
+- 构建命令：`pnpm build`
+- 启动命令（自托管平台）：`pnpm start`
 - 构建产物：Next.js 默认 `.next`，不要手动覆盖输出目录
 
 在 Vercel 中导入整个 Git 仓库后，将 **Root Directory** 设置为 `frontend`，

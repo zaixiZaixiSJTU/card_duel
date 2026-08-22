@@ -47,6 +47,7 @@ card-duel-web
 | `leave_room` | `{}` | 主动离开房间 |
 | `play_card` | `{"source":"hand","index":0}` | 当前玩家在出牌阶段打出手牌或生物 |
 | `discard_card` | `{"index":0}` | 进入/停留在弃牌阶段并弃一张牌 |
+| `discard_cards` | `{"indexes":[0,2]}` | 从出牌/弃牌阶段原子弃置预选的多张牌 |
 | `end_turn` | `{}` | 手牌不超过上限时结算回合结束并切换玩家 |
 | `resolve_choice` | 见下文 | 回答当前挂起的卡牌或阶段选择 |
 | `cancel_choice` | `{"choice_id":"..."}` | 取消选择并保留动作前状态 |
@@ -70,6 +71,9 @@ card-duel-web
 `play_card.source` 可取 `hand` 或 `creature`，`index` 始终是当前个性化状态中
 对应区域的零基索引。成功动作后双方都会收到新的 `state`，其中 `revision`
 单调递增。
+
+浏览器应优先使用 `discard_cards`：玩家可先在本地增加或减去待弃牌，再一次确认。
+服务端会先验证全部索引及可弃规则；任一牌不可弃时整批回滚，不会产生部分提交。
 
 ## 卡牌选择
 
@@ -114,14 +118,20 @@ card-duel-web
 - `announcement` / `private_announcement`：公共或仅对应玩家可见的结算日志。
 - `card_played`：公开最近打出的卡牌，不包含手牌信息。
 - `choice_required` / `choice_cancelled`：选择挂起或取消。
+- `room_left`：主动离开成功，客户端应清空本地房间/对局状态并返回入口。
 - `room_closed`：房主离开，或对局中的任一玩家断线。
 - `error`：可恢复的动作校验错误。
 
 ## 状态隐私与当前边界
 
 中心服为两名玩家维护独立的 `hand / draw_pile / discard_pile`。`you` 包含本人
-完整手牌及与手牌位置对齐的动态 `card_costs`，`opponent` 只包含手牌数量和
-牌堆计数；角色状态中的待加入、待移除、待返还手牌队列也不会发送给对方。
+完整手牌、与手牌位置对齐的动态 `card_costs` / `card_discardable`，以及规则计算
+后的 `effective_hand_size`；`opponent` 只包含手牌数量和牌堆计数。角色状态中的
+待加入、待移除、待返还手牌队列也不会发送给对方。
+`players` 中的公开核心值包含 `health`、`max_health`、`energy`、`strength`、
+`poison` 和即时计算的 `defence`；前端用当前/最大生命绘制生命条，不自行猜测角色
+生命上限。新增字段的归属、可见性和展示步骤见
+[状态显示与新效果开发工作流](STATUS_EFFECT_WORKFLOW.md)。
 `card_catalogs` 只包含本局角色的公开卡牌定义（名称、类型、费用、说明、消耗
 标志），供浏览器渲染卡面，不携带任何一方的私有牌区。
 

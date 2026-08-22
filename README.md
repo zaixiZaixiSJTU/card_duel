@@ -53,6 +53,8 @@ npm run dev
 结束回合及事务型选择。`http://localhost:8000` 是后端服务说明页，不是游戏
 页面。浏览器动作和服务端事件格式见 [Web 后端协议](docs/WEB_BACKEND.md)。
 前后端分开上线的完整参数见 [部署指南](docs/DEPLOYMENT.md)。
+新增角色属性、状态和卡牌效果时遵循
+[状态显示与新效果开发工作流](docs/STATUS_EFFECT_WORKFLOW.md)。
 
 ## 依赖方向
 
@@ -174,7 +176,7 @@ registry.freeze()
 
 `CharacterState` 分为三部分：
 
-- 公共数值：生命、能量、防御、力量、毒；
+- 公共数值：当前/最大生命、能量、防御、力量、毒；
 - `CombatStatuses`：任何角色都可能受到的免疫、致盲、插入物、生物威胁等状态；
 - `character_data`：由角色包创建的类型化 dataclass，例如 `WarriorData` 或 `SlugcatData`。
 

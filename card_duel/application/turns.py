@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from contextlib import suppress
 
 from card_duel.core.rules import draw_cards
@@ -86,12 +87,21 @@ def return_card_after_use(game_state, player_id: int, card_id: int) -> None:
         game_state.discard_pile.append(card_id)
 
 
-def effective_hand_size(game_state, player_id: int) -> int:
+def effective_hand_size(
+    game_state, player_id: int, hand_cards: Sequence[int] | None = None
+) -> int:
+    """Return the rule-aware hand size for either the active or a supplied zone."""
+    cards = game_state.hand_cards if hand_cards is None else hand_cards
     if game_state.character_ids.get(player_id) != 4:
-        return game_state.hand_size
-    from card_duel.cards.slugcat.hand import effective_hand_size as slugcat_hand_size
+        return len(cards)
 
-    return slugcat_hand_size(game_state, player_id)
+    from card_duel.cards.slugcat.specs import SLUGCAT_DISCOVERY_IDS
+
+    statuses = game_state.players[player_id].statuses
+    has_tube_worm = any(item.card_id == 26 for item in statuses.hand_creatures)
+    if not has_tube_worm:
+        return len(cards)
+    return len(cards) - sum(card_id in SLUGCAT_DISCOVERY_IDS for card_id in cards)
 
 
 def can_discard(game_state, player_id: int, card_id: int) -> bool:
