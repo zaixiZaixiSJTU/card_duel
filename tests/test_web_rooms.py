@@ -180,6 +180,26 @@ class RoomManagerTests(unittest.IsolatedAsyncioTestCase):
             "pending_hand_additions", host_state["players"]["2"]["statuses"]
         )
 
+    async def test_same_seed_deals_differently_by_player_identity(self):
+        await self.start_warrior_match()
+
+        first_room = self.manager.rooms["123456"]
+        first_host_hand = list(first_room.card_zones[1].hand)
+        first_guest_hand = list(first_room.card_zones[2].hand)
+        await self.manager.disconnect(self.host_id)
+        await self.manager.disconnect(self.guest_id)
+
+        self.host_id = await self.manager.connect(self.host)
+        self.guest_id = await self.manager.connect(self.guest)
+        self.host.pop("connected")
+        self.guest.pop("connected")
+        await self.start_warrior_match()
+
+        second_room = self.manager.rooms["123456"]
+        self.assertEqual(second_room.card_zones[1].hand, first_host_hand)
+        self.assertEqual(second_room.card_zones[2].hand, first_guest_hand)
+        self.assertNotEqual(second_room.card_zones[1].hand, second_room.card_zones[2].hand)
+
     async def test_guest_disconnect_returns_lobby_to_one_player(self):
         code = await self.create_and_join()
 
