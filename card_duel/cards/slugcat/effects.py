@@ -57,7 +57,7 @@ def _resolve_action_chain(context, card_id: int) -> None:
     data = slugcat_data(context.source)
     if card_id == 6 or not data.jump_followup:
         return
-    if card_id in (1, 2, 4, 5):
+    if card_id in SLUGCAT_ATTACK_ITEM_IDS:
         data.agility += 1
         context.announce(
             f"玩家{context.source_player_id}借小跳衔接攻击，额外获得1点敏捷"
@@ -496,6 +496,8 @@ def bubble_fruit(context):
         data.satiety += 1
         context.announce(f"玩家{context.source_player_id}把泡水果当作蓝果")
         return True
+    if not _pay_cost(context, 45):
+        return False
     damage = _attack_with_momentum(context, 1)
     context.combat.resolve_attack(context, damage, "泡水果（石子）")
     return True

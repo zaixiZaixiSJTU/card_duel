@@ -121,6 +121,17 @@ class SlugcatTests(unittest.TestCase):
         self.assertEqual(self.combat.apply_damage(2, 1), 0)
         self.assertEqual(data.agility, 2)
 
+    def test_hop_followup_includes_stone_and_all_attack_items(self):
+        self.game.players[1].energy = 1
+
+        self.assertTrue(self.play(6))
+        self.assertEqual(slugcat_data(self.game.players[1]).agility, 1)
+
+        self.assertTrue(self.play(2))
+
+        self.assertEqual(slugcat_data(self.game.players[1]).agility, 2)
+        self.assertFalse(slugcat_data(self.game.players[1]).jump_followup)
+
     def test_first_discovery_expands_deck_and_karma_cap(self):
         self.game.players[1].energy = 2
 

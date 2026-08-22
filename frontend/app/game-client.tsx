@@ -101,6 +101,29 @@ type ChoicePrompt = {
 
 type PendingChoice = { choice_id: string; choice: ChoicePrompt };
 type LogEntry = { id: number; tone: string; text: string };
+type PlayTarget = { source: "hand" | "creature"; index: number; token: number };
+type LayoutSettings = {
+  uiScale: number;
+  cardWidth: number;
+  chatFontSize: number;
+  chatHeight: number;
+  sideColumnWidth: number;
+};
+type InteractionSettings = {
+  clickMode: "single" | "double";
+  playGapMs: number;
+};
+const DEFAULT_LAYOUT_SETTINGS: LayoutSettings = {
+  uiScale: 100,
+  cardWidth: 145,
+  chatFontSize: 13,
+  chatHeight: 285,
+  sideColumnWidth: 350,
+};
+const DEFAULT_INTERACTION_SETTINGS: InteractionSettings = {
+  clickMode: "double",
+  playGapMs: 700,
+};
 
 const phaseIndex: Record<string, number> = {
   "回合开始时": 0,
@@ -112,6 +135,14 @@ const phaseIndex: Record<string, number> = {
 
 const phases = ["回合开始", "抽牌", "出牌", "弃牌", "回合结束"];
 const inlineRulePattern = new RegExp(`(${INLINE_RULE_TERMS.map(({ term }) => term).join("|")})`, "g");
+
+function logTone(message: string) {
+  if (/伤害|扣血|实际扣血|失去生命|流血/.test(message)) return "damage";
+  if (/获得|增加|恢复|抽牌|饱食度\+|敏捷\+|动能\+|力量\+/.test(message)) return "gain";
+  if (/不能|不足|无法|失败|警告|超时/.test(message)) return "warn";
+  if (/回合|轮到|阶段/.test(message)) return "turn";
+  return "normal";
+}
 
 function defaultEndpoint() {
   const configuredEndpoint = process.env.NEXT_PUBLIC_CARD_DUEL_WS_URL;
@@ -142,6 +173,8 @@ export function GameClient() {
   const [firstPlayer, setFirstPlayer] = useState("random");
   const [seed, setSeed] = useState("");
   const [roundOneSafe, setRoundOneSafe] = useState(true);
+  const [layout, setLayout] = useState(DEFAULT_LAYOUT_SETTINGS);
+  const [interaction, setInteraction] = useState(DEFAULT_INTERACTION_SETTINGS);
 
   const addLog = (text: string, tone = "normal") => {
     setLogs((current) => [
@@ -214,7 +247,7 @@ export function GameClient() {
         addLog(`玩家${data.player_id}：${data.message}`, "chat");
         break;
       case "announcement":
-        addLog(String(data.message), /伤害|失去|流血/.test(String(data.message)) ? "damage" : "normal");
+        addLog(String(data.message), logTone(String(data.message)));
         break;
       case "private_announcement":
         addLog(String(data.message), "private");
@@ -322,6 +355,10 @@ export function GameClient() {
         send={send}
         lastPlayed={lastPlayed}
         connection={connection}
+        layout={layout}
+        interaction={interaction}
+        onLayoutChange={setLayout}
+        onInteractionChange={setInteraction}
       >
         {choice && (
           <ChoiceDialog
@@ -495,8 +532,13 @@ function LobbyScreen(props: {
 function MatchScreen(props: {
   match: MatchView; logs: LogEntry[]; chatText: string; setChatText: (value: string) => void;
   submitChat: (event: FormEvent) => void; send: (action: string, data?: Record<string, unknown>) => void;
-  lastPlayed: { character_id: number; card_id: number } | null; connection: ConnectionStatus; children: ReactNode;
+  lastPlayed: { character_id: number; card_id: number } | null; connection: ConnectionStatus;
+  layout: LayoutSettings; interaction: InteractionSettings;
+  onLayoutChange: (settings: LayoutSettings) => void;
+  onInteractionChange: (settings: InteractionSettings) => void;
+  children: ReactNode;
 }) {
+  const [localNotice, setLocalNotice] = useState<string | null>(null);
   const { match } = props;
   const [discardDraft, setDiscardDraft] = useState({
     revision: match.revision,
@@ -523,8 +565,132 @@ function MatchScreen(props: {
   const getCard = (characterId: number, cardId: number) => catalogs[String(characterId)]?.find((card) => card.card_id === cardId);
   const lastCard = props.lastPlayed ? getCard(props.lastPlayed.character_id, props.lastPlayed.card_id) : null;
   const creatures = me.statuses.hand_creatures.filter((creature) => creature.card_id !== 26);
+  const playTimerRef = useRef<number | null>(null);
+  const playTokenRef = useRef(0);
+  const relayoutTimerRef = useRef<number | null>(null);
+  const playLockUntilRef = useRef(0);
+  const [playLocked, setPlayLocked] = useState(false);
+  const [handRelayouting, setHandRelayouting] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const pendingPlayRef = useRef<PlayTarget | null>(null);
+  const [activePlayTarget, setActivePlayTarget] = useState<PlayTarget | null>(null);
+  const canPlay = myTurn && inPlay && !match.pending_choice && !playLocked && !handRelayouting;
+  const styleVariables = {
+    "--ui-scale": String(props.layout.uiScale / 100),
+    "--card-width": `${props.layout.cardWidth}px`,
+    "--chat-font-size": `${props.layout.chatFontSize}px`,
+    "--chat-height": `${props.layout.chatHeight}px`,
+    "--side-column": `${props.layout.sideColumnWidth}px`,
+  } as React.CSSProperties;
+
+  useEffect(() => () => {
+    if (playTimerRef.current !== null) window.clearTimeout(playTimerRef.current);
+    if (relayoutTimerRef.current !== null) window.clearTimeout(relayoutTimerRef.current);
+  }, []);
+
+  const cancelScheduledPlay = () => {
+    if (playTimerRef.current !== null) {
+      window.clearTimeout(playTimerRef.current);
+      playTimerRef.current = null;
+      setLocalNotice(null);
+    }
+  };
+
+  const startHandRelayout = () => {
+    setHandRelayouting(true);
+    if (relayoutTimerRef.current !== null) window.clearTimeout(relayoutTimerRef.current);
+    relayoutTimerRef.current = window.setTimeout(() => {
+      relayoutTimerRef.current = null;
+      setHandRelayouting(false);
+    }, 260);
+  };
+
+  const lockPlayForGap = () => {
+    playLockUntilRef.current = 1;
+    setPlayLocked(true);
+    window.setTimeout(() => {
+      playLockUntilRef.current = 0;
+      setPlayLocked(false);
+    }, Math.max(260, props.interaction.playGapMs));
+  };
+
+  const playTarget = (target: PlayTarget) => {
+    setActivePlayTarget(null);
+    props.send("play_card", { source: target.source, index: target.index });
+    startHandRelayout();
+    setLocalNotice(null);
+    lockPlayForGap();
+  };
+
+  const beginPress = (source: "hand" | "creature", index: number) => {
+    if (playLockUntilRef.current) return;
+    const token = ++playTokenRef.current;
+    const target = { source, index, token };
+    if (props.interaction.clickMode === "double") {
+      if (
+        pendingPlayRef.current &&
+        pendingPlayRef.current.source === source &&
+        pendingPlayRef.current.index === index &&
+        playTimerRef.current !== null
+      ) {
+        window.clearTimeout(playTimerRef.current);
+        playTimerRef.current = null;
+        pendingPlayRef.current = null;
+        setActivePlayTarget(null);
+        playTarget(target);
+        return;
+      }
+      cancelScheduledPlay();
+      setActivePlayTarget(target);
+      pendingPlayRef.current = target;
+      playTimerRef.current = window.setTimeout(() => {
+        playTimerRef.current = null;
+        pendingPlayRef.current = null;
+        setLocalNotice("请再次点击确认出牌");
+      }, 500);
+      return;
+    }
+
+    cancelScheduledPlay();
+    setActivePlayTarget(target);
+    pendingPlayRef.current = target;
+  };
+
+  const confirmPress = (source: "hand" | "creature", index: number) => {
+    if (props.interaction.clickMode !== "single") return;
+    const pending = pendingPlayRef.current;
+    if (playLockUntilRef.current || !pending) return;
+    if (pending.source === source && pending.index === index) {
+      playTimerRef.current = null;
+      pendingPlayRef.current = null;
+      setActivePlayTarget(null);
+      playTarget(pending);
+    }
+  };
+
+  const cancelPress = (source: "hand" | "creature", index: number) => {
+    const pending = pendingPlayRef.current;
+    if (pending && pending.source === source && pending.index === index) {
+      cancelScheduledPlay();
+      pendingPlayRef.current = null;
+      setActivePlayTarget(null);
+    }
+  };
+
+  const updateMatchLayout = (patch: Partial<LayoutSettings>) => {
+    const next = { ...props.layout, ...patch };
+    localStorage.setItem("cardDuel.layout", JSON.stringify(next));
+    props.onLayoutChange(next);
+  };
+
+  const updateMatchInteraction = (patch: Partial<InteractionSettings>) => {
+    const next = { ...props.interaction, ...patch };
+    localStorage.setItem("cardDuel.interaction", JSON.stringify(next));
+    props.onInteractionChange(next);
+  };
 
   const toggleDiscard = (index: number) => {
+    cancelScheduledPlay();
     const discardable = match.you.card_discardable?.[index] ?? ![49, 50].includes(match.you.hand_cards[index]);
     if (!discardable) return;
     setDiscardDraft((current) => {
@@ -547,7 +713,7 @@ function MatchScreen(props: {
   };
 
   return (
-    <main className="match-shell">
+    <main className="match-shell" style={styleVariables}>
       <header className="match-topbar"><Brand connection={props.connection} compact /><div className="turn-track">{phases.map((phase, index) => <div key={phase} className={`${index === currentPhase ? "active" : ""} ${index < currentPhase ? "done" : ""}`}><span>{index + 1}</span><GameTooltip className="phase-name" explanation={phaseExplanation(phase)}><b>{phase}</b></GameTooltip></div>)}</div><GameTooltip className="round-tooltip" explanation={{ title: "轮次", description: "双方各完成一个回合后，轮次增加。新轮次会重新分配双方能量。" }}><span className="round-chip"><small>ROUND</small><strong>{String(match.round_number).padStart(2, "0")}</strong></span></GameTooltip></header>
 
       <section className="opponent-zone">
@@ -558,8 +724,11 @@ function MatchScreen(props: {
 
       <section className="battlefield">
         <div className="creature-lane opponent-creatures">{opponent.statuses.hand_creatures.map((creature, index) => <CreatureChip key={`${creature.card_id}-${index}`} creature={creature} card={getCard(opponentCharacter, creature.card_id)} />)}</div>
-        <div className="last-played">{lastCard ? <MiniCard card={lastCard} cost={lastCard.cost} /> : <div className="empty-played"><span>LAST PLAYED</span><b>等待出牌</b></div>}</div>
-        <div className="creature-lane own-creatures">{creatures.map((creature, index) => <button key={`${creature.card_id}-${index}`} type="button" disabled={!myTurn || !inPlay || match.pending_choice} onClick={() => props.send("play_card", { source: "creature", index })}><CreatureChip creature={creature} card={getCard(myCharacter, creature.card_id)} /></button>)}</div>
+        <div className="last-played">{lastCard && props.lastPlayed ? <MiniCard card={lastCard} cost={lastCard.cost} characterId={props.lastPlayed.character_id} /> : <div className="empty-played"><span>LAST PLAYED</span><b>等待出牌</b></div>}</div>
+        <div className="creature-lane own-creatures">{creatures.map((creature, index) => {
+          const activeTarget = activePlayTarget?.source === "creature" && activePlayTarget.index === index;
+          return <button key={`${creature.card_id}-${index}`} aria-pressed={activeTarget} className={activeTarget ? "press-selected" : ""} type="button" disabled={!canPlay} onMouseDown={() => beginPress("creature", index)} onMouseUp={() => confirmPress("creature", index)} onMouseLeave={() => cancelPress("creature", index)} onTouchStart={(event) => { event.preventDefault(); beginPress("creature", index); }} onTouchEnd={(event) => { event.preventDefault(); confirmPress("creature", index); }} onTouchCancel={() => cancelPress("creature", index)}><CreatureChip creature={creature} card={getCard(myCharacter, creature.card_id)} /></button>;
+        })}</div>
         <div className="turn-banner"><i /><span>{myTurn ? "你的回合" : `玩家 ${opponentId} 行动中`}</span><small>{match.current_phase}</small><i /></div>
       </section>
 
@@ -573,6 +742,7 @@ function MatchScreen(props: {
               {!selectingDiscard && <button type="button" className="discard-toggle" disabled={!myTurn || match.pending_choice || !inPlay} onClick={startDiscard}>选择弃牌</button>}
               {selectingDiscard && <button type="button" className="discard-toggle" disabled={inDiscard && discardSelection.length === 0} onClick={clearDiscard}>{inDiscard ? "清空选择" : "取消弃牌"}</button>}
               {selectingDiscard && <button type="button" className="discard-confirm" disabled={!myTurn || match.pending_choice || discardSelection.length === 0} onClick={confirmDiscard}>确认弃置 {discardSelection.length} 张</button>}
+              <button type="button" className="settings-toggle" onClick={() => setSettingsOpen(true)}>界面</button>
               <button type="button" className="turn-end" disabled={!myTurn || match.pending_choice || (!inPlay && !inDiscard) || excessCards > 0 || discardSelection.length > 0} onClick={() => props.send("end_turn")}>{excessCards > 0 ? `还需弃 ${excessCards} 张` : "结束回合"} <b>→</b></button>
             </div>
           </div>
@@ -581,12 +751,24 @@ function MatchScreen(props: {
             const cost = match.you.card_costs?.[index] ?? card?.cost ?? null;
             const discardable = match.you.card_discardable?.[index] ?? ![49, 50].includes(cardId);
             const selected = discardSelection.includes(index);
-            return <button aria-pressed={selectingDiscard ? selected : undefined} className={`hand-card-button ${selected ? "discard-selected" : ""}`} key={`${cardId}-${index}`} type="button" disabled={!myTurn || match.pending_choice || (selectingDiscard ? !discardable : !inPlay)} onClick={() => selectingDiscard ? toggleDiscard(index) : props.send("play_card", { source: "hand", index })}><GameCard card={card} cardId={cardId} cost={cost} index={index} discardState={selectingDiscard ? selected ? "selected" : discardable ? "available" : "blocked" : "none"} /></button>;
+            const activeTarget = !selectingDiscard && activePlayTarget?.source === "hand" && activePlayTarget.index === index;
+            const discardTarget = selectingDiscard && discardDraft.indexes.includes(index);
+            return <button aria-pressed={activeTarget || discardTarget || (selectingDiscard ? selected : undefined)} className={`hand-card-button ${selected ? "discard-selected" : ""} ${activeTarget || discardTarget ? "press-selected" : ""} ${!selectingDiscard && handRelayouting ? "relayout" : ""}`} key={`${cardId}-${index}`} type="button" disabled={selectingDiscard ? !myTurn || match.pending_choice || !discardable : !canPlay} onMouseDown={() => { if (selectingDiscard) toggleDiscard(index); else beginPress("hand", index); }} onMouseUp={() => { if (!selectingDiscard) confirmPress("hand", index); }} onMouseLeave={() => { if (!selectingDiscard) cancelPress("hand", index); }} onTouchStart={(event) => { if (!selectingDiscard) { event.preventDefault(); beginPress("hand", index); } }} onTouchEnd={(event) => { if (!selectingDiscard) { event.preventDefault(); confirmPress("hand", index); } }} onTouchCancel={() => { if (!selectingDiscard) cancelPress("hand", index); }}><GameCard card={card} characterId={myCharacter} cardId={cardId} cost={cost} index={index} discardState={selectingDiscard ? selected ? "selected" : discardable ? "available" : "blocked" : "none"} /></button>;
           })}</div>
         </div>
         <LogPanel logs={props.logs} chatText={props.chatText} setChatText={props.setChatText} submitChat={props.submitChat} />
       </section>
       {props.children}
+      {localNotice && <Notice message={localNotice} close={() => setLocalNotice(null)} />}
+      {settingsOpen && (
+        <SettingsDialog
+          layout={props.layout}
+          interaction={props.interaction}
+          onChangeLayout={updateMatchLayout}
+          onChangeInteraction={updateMatchInteraction}
+          close={() => setSettingsOpen(false)}
+        />
+      )}
     </main>
   );
 }
@@ -644,13 +826,89 @@ function RuleText({ text }: { text: string }) {
 
 function cardTone(type = "卡牌") { return type.includes("物品") ? "item" : type.includes("生物") ? "creature" : type.includes("见闻") ? "discovery" : type.includes("技能") ? "skill" : "attack"; }
 
-function GameCard({ card, cardId, cost, index, discardState }: { card?: CardDefinition; cardId: number; cost: number | null; index: number; discardState: "none" | "available" | "selected" | "blocked" }) {
-  const cardType = card?.card_type ?? "卡牌";
-  return <article className={`game-card ${cardTone(cardType)} ${discardState !== "none" ? "discard-mode" : ""} ${discardState === "selected" ? "discard-selected" : ""}`}><div className="card-top"><GameTooltip focusable={false} className="card-type-tooltip" explanation={cardTypeExplanation(cardType)}><span>{cardType}</span></GameTooltip><div className="card-flags">{card?.exhausted && <GameTooltip focusable={false} className="exhaust-tooltip" explanation={GAME_TERMS.exhaust}><span>消耗</span></GameTooltip>}<GameTooltip focusable={false} className="card-cost-tooltip" explanation={cardCostExplanation(cost, card?.cost)}><b>{cost ?? "—"}</b></GameTooltip></div></div><div className="card-art"><span>{card?.name?.slice(0, 1) ?? "?"}</span></div><div className="card-copy"><strong>{card?.name ?? `卡牌 ${cardId}`}</strong><p><RuleText text={card?.description || "暂无卡牌说明"} /></p></div><small>#{String(index + 1).padStart(2, "0")} · ID {cardId}</small>{discardState !== "none" && <em>{discardState === "selected" ? "− 退回" : discardState === "blocked" ? "不可弃置" : "+ 选择弃置"}</em>}</article>;
+function cardImage(characterId: number, cardId: number) {
+  return characterId === 1 ? `/cards/1/img-${cardId}.jpg` : null;
 }
 
-function MiniCard({ card, cost }: { card: CardDefinition; cost: number | null }) { return <div className={`mini-card ${cardTone(card.card_type)}`}><GameTooltip focusable={false} className="mini-card-cost" explanation={cardCostExplanation(cost, card.cost)}><b>{cost ?? "—"}</b></GameTooltip><GameTooltip focusable={false} explanation={cardTypeExplanation(card.card_type)}><span>{card.card_type}</span></GameTooltip><strong>{card.name}</strong></div>; }
-function CreatureChip({ creature, card }: { creature: Creature; card?: CardDefinition }) { return <div className="creature-chip"><span>{card?.name?.slice(0, 1) ?? "生"}</span><div><strong>{card?.name ?? `生物 ${creature.card_id}`}</strong><GameTooltip focusable={false} explanation={GAME_TERMS.creatureHealth}><small>♥ {creature.health}{creature.shell === false ? " · 破甲" : ""}</small></GameTooltip></div></div>; }
+function GameCard({ card, characterId = 1, cardId, cost, index, discardState }: { card?: CardDefinition; characterId?: number; cardId: number; cost: number | null; index: number; discardState: "none" | "available" | "selected" | "blocked" }) {
+  const cardType = card?.card_type ?? "卡牌";
+  const image = card ? cardImage(characterId, card.card_id) : null;
+  return <article className={`game-card ${cardTone(cardType)} ${discardState !== "none" ? "discard-mode" : ""} ${discardState === "selected" ? "discard-selected" : ""}`}>
+    <div className="card-top">
+      <GameTooltip focusable={false} className="card-type-tooltip" explanation={cardTypeExplanation(cardType)}><span>{cardType}</span></GameTooltip>
+      <div className="card-flags">
+        {card?.exhausted && <GameTooltip focusable={false} className="exhaust-tooltip" explanation={GAME_TERMS.exhaust}><span>消耗</span></GameTooltip>}
+        <GameTooltip focusable={false} className="card-cost-tooltip" explanation={cardCostExplanation(cost, card?.cost)}><b>{cost ?? "—"}</b></GameTooltip>
+      </div>
+    </div>
+    {image ? <img className="card-art-image" src={image} alt="" /> : <div className="card-art"><span>{card?.name?.slice(0, 1) ?? "?"}</span></div>}
+    <div className="card-copy"><strong>{card?.name ?? `卡牌 ${cardId}`}</strong><p><RuleText text={card?.description || "暂无卡牌说明"} /></p></div>
+    <small>#{String(index + 1).padStart(2, "0")} · ID {cardId}</small>
+    {discardState !== "none" && <em>{discardState === "selected" ? "− 退回" : discardState === "blocked" ? "不可弃置" : "+ 选择弃置"}</em>}
+  </article>;
+}
+
+function MiniCard({ card, cost, characterId }: { card: CardDefinition; cost: number | null; characterId: number }) {
+  const image = cardImage(characterId, card.card_id);
+  return <div className={`mini-card ${cardTone(card.card_type)}`}>
+    <GameTooltip focusable={false} className="mini-card-cost" explanation={cardCostExplanation(cost, card.cost)}><b>{cost ?? "—"}</b></GameTooltip>
+    {image ? <img className="card-art-image" src={image} alt="" /> : <div className="card-art"><span>{card.name.slice(0, 1)}</span></div>}
+    <GameTooltip focusable={false} explanation={cardTypeExplanation(card.card_type)}><span>{card.card_type}</span></GameTooltip>
+    <strong>{card.name}</strong>
+    <p>{card.description || "暂无卡牌说明"}</p>
+  </div>;
+}
+
+function CreatureChip({ creature, card }: { creature: Creature; card?: CardDefinition }) {
+  if (!card) return null;
+  return <div className="creature-chip">
+    <div>
+      <strong>{card.name}</strong>
+      <GameTooltip focusable={false} explanation={GAME_TERMS.creatureHealth}>
+        <small>♥ {creature.health}{creature.shell === false ? " · 破甲" : ""}</small>
+      </GameTooltip>
+    </div>
+  </div>;
+}
+
+function SettingsDialog({ layout, interaction, onChangeLayout, onChangeInteraction, close }: {
+  layout: LayoutSettings;
+  interaction: InteractionSettings;
+  onChangeLayout: (patch: Partial<LayoutSettings>) => void;
+  onChangeInteraction: (patch: Partial<InteractionSettings>) => void;
+  close: () => void;
+}) {
+  const updateLayout = (next: Partial<LayoutSettings>) => onChangeLayout(next);
+  const updateInteraction = (next: Partial<InteractionSettings>) => onChangeInteraction(next);
+  return <div className="modal-backdrop">
+    <section className="choice-dialog settings-dialog" role="dialog" aria-modal="true" aria-labelledby="layout-settings-title">
+      <p className="eyebrow">INTERFACE</p>
+      <h2 id="layout-settings-title">界面与出牌设置</h2>
+      <div className="settings-grid">
+        {[["uiScale", "整体缩放", 80, 140], ["cardWidth", "手牌宽度", 120, 220], ["chatFontSize", "聊天字号", 11, 20], ["chatHeight", "聊天高度", 200, 460], ["sideColumnWidth", "侧栏宽度", 260, 480]].map(([key, label, minimum, maximum]) => (
+          <label key={key as string}>
+            <span>{label as string}<b>{layout[key as keyof LayoutSettings]}</b></span>
+            <input type="range" min={minimum as number} max={maximum as number} value={layout[key as keyof LayoutSettings]} onChange={(event) => onChangeLayout({ [key as keyof LayoutSettings]: Number(event.target.value) } as Partial<LayoutSettings>)} />
+          </label>
+        ))}
+      </div>
+      <fieldset>
+        <legend>出牌方式</legend>
+        <div className="segmented">
+          {[["double", "双击出牌"], ["single", "松开出牌"]].map(([value, label]) => (
+            <button key={value} type="button" className={interaction.clickMode === value ? "active" : ""} onClick={() => onChangeInteraction({ clickMode: value as InteractionSettings["clickMode"] })}>{label}</button>
+          ))}
+        </div>
+        <label className="settings-delay">
+          <span>出牌间隔<b>{interaction.playGapMs}ms</b></span>
+          <input type="range" min={260} max={2000} step={20} value={interaction.playGapMs} onChange={(event) => onChangeInteraction({ playGapMs: Number(event.target.value) })} />
+        </label>
+        <small>松开模式：按住后移出卡牌会取消，在原牌上松开才打出。双击模式：第一次点击选中，500ms 内再次点击确认。两种模式都会保留出牌间隔。</small>
+      </fieldset>
+      <footer><button type="button" onClick={() => { updateLayout(DEFAULT_LAYOUT_SETTINGS); updateInteraction(DEFAULT_INTERACTION_SETTINGS); }}>恢复默认</button><button type="button" className="primary-action" onClick={close}>完成</button></footer>
+    </section>
+  </div>;
+}
 
 function LogPanel({ logs, chatText, setChatText, submitChat, compact = false }: { logs: LogEntry[]; chatText: string; setChatText: (value: string) => void; submitChat: (event: FormEvent) => void; compact?: boolean }) {
   const endRef = useRef<HTMLDivElement | null>(null);
