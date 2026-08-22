@@ -79,6 +79,8 @@ type MatchView = {
   pending_choice: boolean;
   you: {
     hand_cards: number[];
+    draw_pile?: number[];
+    discard_pile?: number[];
     card_costs?: Array<number | null>;
     card_discardable?: boolean[];
     effective_hand_size?: number;
@@ -104,6 +106,9 @@ type ChoicePrompt = {
 type PendingChoice = { choice_id: string; choice: ChoicePrompt };
 type LogEntry = { id: number; tone: string; text: string };
 type PlayTarget = { source: "hand" | "creature"; index: number; token: number };
+type DeckViewerMode = "draw" | "discard";
+type LayoutRegion = "opponentStatus" | "ownStatus" | "piles" | "hand" | "lastPlayed" | "actionPanel" | "logPanel";
+type DiscardPress = { index: number; token: number };
 type LayoutSettings = {
   uiScale: number;
   cardWidth: number;
@@ -121,6 +126,16 @@ const DEFAULT_LAYOUT_SETTINGS: LayoutSettings = {
   chatFontSize: 13,
   chatHeight: 285,
   sideColumnWidth: 350,
+};
+
+const DEFAULT_REGION_OFFSETS: Record<LayoutRegion, { x: number; y: number }> = {
+  opponentStatus: { x: 0, y: 0 },
+  ownStatus: { x: 0, y: 0 },
+  piles: { x: 0, y: 0 },
+  hand: { x: 0, y: 0 },
+  lastPlayed: { x: 0, y: 0 },
+  actionPanel: { x: 0, y: 0 },
+  logPanel: { x: 0, y: 0 },
 };
 const DEFAULT_INTERACTION_SETTINGS: InteractionSettings = {
   clickMode: "double",
@@ -177,6 +192,25 @@ export function GameClient() {
   const [roundOneSafe, setRoundOneSafe] = useState(true);
   const [layout, setLayout] = useState(DEFAULT_LAYOUT_SETTINGS);
   const [interaction, setInteraction] = useState(DEFAULT_INTERACTION_SETTINGS);
+
+  useEffect(() => {
+    try {
+      const savedLayout = localStorage.getItem("cardDuel.layout");
+      const nextLayout = savedLayout ? { ...DEFAULT_LAYOUT_SETTINGS, ...JSON.parse(savedLayout) } : null;
+      const savedInteraction = localStorage.getItem("cardDuel.interaction");
+      const nextInteraction = savedInteraction ? { ...DEFAULT_INTERACTION_SETTINGS, ...JSON.parse(savedInteraction) } : null;
+      if (nextLayout || nextInteraction) {
+        window.setTimeout(() => {
+          if (nextLayout) setLayout(nextLayout);
+          if (nextInteraction) setInteraction(nextInteraction);
+        }, 0);
+      }
+    } catch {
+      localStorage.removeItem("cardDuel.layout");
+      localStorage.removeItem("cardDuel.interaction");
+      localStorage.removeItem("cardDuel.regions");
+    }
+  }, []);
 
   const addLog = (text: string, tone = "normal") => {
     setLogs((current) => [
@@ -574,8 +608,12 @@ function MatchScreen(props: {
   const [playLocked, setPlayLocked] = useState(false);
   const [handRelayouting, setHandRelayouting] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [deckViewer, setDeckViewer] = useState<DeckViewerMode | null>(null);
+  const [previewedCard, setPreviewedCard] = useState<{ card: CardDefinition; count: number } | null>(null);
+  const [handView, setHandView] = useState<"cards" | "creatures">("cards");
   const pendingPlayRef = useRef<PlayTarget | null>(null);
   const [activePlayTarget, setActivePlayTarget] = useState<PlayTarget | null>(null);
+  const [activeDiscardTarget, setActiveDiscardTarget] = useState<DiscardPress | null>(null);
   const canPlay = myTurn && inPlay && !match.pending_choice && !playLocked && !handRelayouting;
   const styleVariables = {
     "--ui-scale": String(props.layout.uiScale / 100),
@@ -685,6 +723,51 @@ function MatchScreen(props: {
     props.onLayoutChange(next);
   };
 
+  const [regionOffsets, setRegionOffsets] = useState(DEFAULT_REGION_OFFSETS);
+  useEffect(() => {
+    try {
+      const savedRegions = localStorage.getItem("cardDuel.regions");
+      const nextRegions = savedRegions ? { ...DEFAULT_REGION_OFFSETS, ...JSON.parse(savedRegions) } : null;
+      if (nextRegions) window.setTimeout(() => setRegionOffsets(nextRegions), 0);
+    } catch {
+      localStorage.removeItem("cardDuel.regions");
+    }
+  }, []);
+
+  const updateRegionOffset = (region: LayoutRegion, patch: { x?: number; y?: number }) => {
+    setRegionOffsets((current) => {
+      const next = { ...current, [region]: { ...current[region], ...patch } };
+      localStorage.setItem("cardDuel.regions", JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const resetRegionOffsets = () => {
+    localStorage.setItem("cardDuel.regions", JSON.stringify(DEFAULT_REGION_OFFSETS));
+    setRegionOffsets(DEFAULT_REGION_OFFSETS);
+  };
+
+  const startRegionDrag = (event: React.PointerEvent<HTMLElement>, region: LayoutRegion) => {
+    const target = event.target as HTMLElement;
+    if (target.closest("button, input, form")) return;
+    if ((event.target as HTMLElement).closest("[data-region]")?.getAttribute("data-region") !== region) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const origin = regionOffsets[region];
+    const move = (moveEvent: PointerEvent) => {
+      updateRegionOffset(region, { x: Math.round(origin.x + moveEvent.clientX - startX), y: Math.round(origin.y + moveEvent.clientY - startY) });
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+  };
+
   const updateMatchInteraction = (patch: Partial<InteractionSettings>) => {
     const next = { ...props.interaction, ...patch };
     localStorage.setItem("cardDuel.interaction", JSON.stringify(next));
@@ -695,42 +778,100 @@ function MatchScreen(props: {
     cancelScheduledPlay();
     const discardable = match.you.card_discardable?.[index] ?? ![49, 50].includes(match.you.hand_cards[index]);
     if (!discardable) return;
-    setDiscardDraft((current) => {
-      const currentIndexes = current.revision === match.revision && current.activePlayerId === match.active_player_id ? current.indexes : [];
-      return {
+    const currentIndexes = discardDraft.revision === match.revision && discardDraft.activePlayerId === match.active_player_id ? discardDraft.indexes : [];
+    const nextIndexes = toggleLimitedIndex(currentIndexes, index, match.you.hand_cards.length);
+    if (!nextIndexes.length) {
+      props.send("discard_cards", { indexes: [...currentIndexes].sort((left, right) => left - right) });
+    }
+    setDiscardDraft({
         revision: match.revision,
         activePlayerId: match.active_player_id,
         mode: true,
-        indexes: toggleLimitedIndex(currentIndexes, index, match.you.hand_cards.length),
-      };
+        indexes: nextIndexes,
     });
   };
 
-  const startDiscard = () => setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: true, indexes: [] });
-  const clearDiscard = () => setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: inDiscard, indexes: [] });
+  const beginDiscardPress = (index: number) => {
+    const discardable = match.you.card_discardable?.[index] ?? ![49, 50].includes(match.you.hand_cards[index]);
+    if (!discardable) return;
+    const token = ++playTokenRef.current;
+    if (props.interaction.clickMode === "double") {
+      const pending = activeDiscardTarget;
+      if (pending && pending.index === index && playTimerRef.current !== null) {
+        window.clearTimeout(playTimerRef.current);
+        playTimerRef.current = null;
+        setActiveDiscardTarget(null);
+        toggleDiscard(index);
+        return;
+      }
+      cancelScheduledPlay();
+      setActiveDiscardTarget({ index, token });
+      playTimerRef.current = window.setTimeout(() => {
+        playTimerRef.current = null;
+        setActiveDiscardTarget(null);
+        setLocalNotice("请再次点击确认弃牌");
+      }, 500);
+      return;
+    }
 
-  const confirmDiscard = () => {
-    if (!discardSelection.length) return;
-    props.send("discard_cards", { indexes: [...discardSelection].sort((left, right) => left - right) });
+    cancelScheduledPlay();
+    setActiveDiscardTarget({ index, token });
   };
+
+  const confirmDiscardPress = (index: number) => {
+    if (props.interaction.clickMode !== "single") return;
+    const pending = activeDiscardTarget;
+    if (pending && pending.index === index) {
+      playTimerRef.current = null;
+      setActiveDiscardTarget(null);
+      toggleDiscard(index);
+    }
+  };
+
+  const cancelDiscardPress = (index: number) => {
+    const pending = activeDiscardTarget;
+    if (pending && pending.index === index) {
+      cancelScheduledPlay();
+      setActiveDiscardTarget(null);
+    }
+  };
+
+
+  const visibleHandCards = handView === "cards" ? match.you.hand_cards : [];
+  const visibleCreatures = handView === "creatures" ? creatures : [];
+
+  const deckViewerCards = deckViewer === "draw"
+    ? match.you.draw_pile ?? []
+    : match.you.discard_pile ?? [];
+  const unlockedCreatures = me.statuses.unlocked_creature_counts ?? {};
+  const groupedViewerCards = Object.entries(
+    [
+      ...deckViewerCards,
+      ...(deckViewer === "draw" ? Object.entries(unlockedCreatures).flatMap(([cardId, count]) => Array.from({ length: Number(count) }, () => Number(cardId))) : []),
+    ].reduce<Record<string, Array<{ card: CardDefinition; count: number }>>>((groups, cardId) => {
+      const card = getCard(myCharacter, cardId);
+      if (!card) return groups;
+      groups[card.card_type] ??= [];
+      const existing = groups[card.card_type].find((item) => item.card.card_id === card.card_id);
+      if (existing) existing.count += 1;
+      else groups[card.card_type].push({ card, count: 1 });
+      return groups;
+    }, {}),
+  );
 
   return (
     <main className="match-shell" style={styleVariables}>
       <header className="match-topbar"><Brand connection={props.connection} compact /><div className="turn-track">{phases.map((phase, index) => <div key={phase} className={`${index === currentPhase ? "active" : ""} ${index < currentPhase ? "done" : ""}`}><span>{index + 1}</span><GameTooltip className="phase-name" explanation={phaseExplanation(phase)}><b>{phase}</b></GameTooltip></div>)}</div><GameTooltip className="round-tooltip" explanation={{ title: "轮次", description: "双方各完成一个回合后，轮次增加。新轮次会重新分配双方能量。" }}><span className="round-chip"><small>ROUND</small><strong>{String(match.round_number).padStart(2, "0")}</strong></span></GameTooltip></header>
 
-      <section className="opponent-zone">
+      <section className="opponent-zone layout-region" data-region="opponentStatus" style={{ transform: `translate(${regionOffsets.opponentStatus.x}px, ${regionOffsets.opponentStatus.y}px)` }} onPointerDown={(event) => startRegionDrag(event, "opponentStatus")}>
         <PlayerStatus label={`玩家 ${opponentId}`} character={opponentCharacter} player={opponent} active={match.active_player_id === opponentId} />
-        <div className="opponent-hand" aria-label={`对方有 ${match.opponent.hand_count} 张手牌`}>{Array.from({ length: Math.min(match.opponent.hand_count, 9) }).map((_, index) => <div key={index} style={{ transform: `translateX(${index * -14}px) rotate(${(index - match.opponent.hand_count / 2) * 2}deg)` }} />)}</div>
-        <div className="opponent-piles"><Pile label="抽牌" count={match.opponent.draw_count} /><Pile label="弃牌" count={match.opponent.discard_count} /></div>
       </section>
 
       <section className="battlefield">
         <div className="creature-lane opponent-creatures">{opponent.statuses.hand_creatures.map((creature, index) => <CreatureChip key={`${creature.card_id}-${index}`} creature={creature} card={getCard(opponentCharacter, creature.card_id)} />)}</div>
-        <div className="last-played">{lastCard && props.lastPlayed ? <MiniCard card={lastCard} cost={lastCard.cost} characterId={props.lastPlayed.character_id} /> : <div className="empty-played"><span>LAST PLAYED</span><b>等待出牌</b></div>}</div>
-        <div className="creature-lane own-creatures">{creatures.map((creature, index) => {
-          const activeTarget = activePlayTarget?.source === "creature" && activePlayTarget.index === index;
-          return <button key={`${creature.card_id}-${index}`} aria-pressed={activeTarget} className={activeTarget ? "press-selected" : ""} type="button" disabled={!canPlay} onMouseDown={() => beginPress("creature", index)} onMouseUp={() => confirmPress("creature", index)} onMouseLeave={() => cancelPress("creature", index)} onTouchStart={(event) => { event.preventDefault(); beginPress("creature", index); }} onTouchEnd={(event) => { event.preventDefault(); confirmPress("creature", index); }} onTouchCancel={() => cancelPress("creature", index)}><CreatureChip creature={creature} card={getCard(myCharacter, creature.card_id)} /></button>;
-        })}</div>
+        <div className="layout-region last-played-frame" data-region="lastPlayed" style={{ transform: `translate(${regionOffsets.lastPlayed.x}px, ${regionOffsets.lastPlayed.y}px)` }} onPointerDown={(event) => startRegionDrag(event, "lastPlayed")}>
+          {lastCard && props.lastPlayed ? <MiniCard card={lastCard} cost={lastCard.cost} characterId={props.lastPlayed.character_id} /> : <div className="empty-played"><span>LAST PLAYED</span><b>等待出牌</b></div>}
+        </div>
         <AnimatePresence mode="wait">
           <motion.div 
             className="turn-banner"
@@ -753,31 +894,51 @@ function MatchScreen(props: {
       </section>
 
       <section className="player-zone">
-        <PlayerStatus label={`玩家 ${match.player_id} · 你`} character={myCharacter} player={me} active={myTurn} />
+        <div className="layout-region own-status-region" data-region="ownStatus" style={{ transform: `translate(${regionOffsets.ownStatus.x}px, ${regionOffsets.ownStatus.y}px)` }} onPointerDown={(event) => startRegionDrag(event, "ownStatus")}>
+          <PlayerStatus label={`玩家 ${match.player_id} · 你`} character={myCharacter} player={me} active={myTurn} />
+          <div className="layout-region status-piles" data-region="piles" style={{ transform: `translate(${regionOffsets.piles.x}px, ${regionOffsets.piles.y}px)` }} onPointerDown={(event) => startRegionDrag(event, "piles")}>
+            <button type="button" className="pile-button" onClick={() => setDeckViewer("draw")}><Pile label="抽牌" count={match.you.draw_count} /></button>
+            <button type="button" className="pile-button" onClick={() => setDeckViewer("discard")}><Pile label="弃牌" count={match.you.discard_count} /></button>
+          </div>
+        </div>
         <div className="hand-stage">
           <div className="hand-toolbar">
-            <div><Pile label="抽牌" count={match.you.draw_count} /><Pile label="弃牌" count={match.you.discard_count} /></div>
             <GameTooltip className="hand-limit-tooltip" explanation={GAME_TERMS.handLimit}><span>{effectiveHandSize} / {match.hand_limit} 有效手牌{excessCards > 0 && <em>还需弃 {excessCards} 张</em>}</span></GameTooltip>
-            <div className="hand-actions">
-              {!selectingDiscard && <button type="button" className="discard-toggle" disabled={!myTurn || match.pending_choice || !inPlay} onClick={startDiscard}>选择弃牌</button>}
-              {selectingDiscard && <button type="button" className="discard-toggle" disabled={inDiscard && discardSelection.length === 0} onClick={clearDiscard}>{inDiscard ? "清空选择" : "取消弃牌"}</button>}
-              {selectingDiscard && <button type="button" className="discard-confirm" disabled={!myTurn || match.pending_choice || discardSelection.length === 0} onClick={confirmDiscard}>确认弃置 {discardSelection.length} 张</button>}
-              <button type="button" className="settings-toggle" onClick={() => setSettingsOpen(true)}>界面</button>
-              <button type="button" className="turn-end" disabled={!myTurn || match.pending_choice || (!inPlay && !inDiscard) || excessCards > 0 || discardSelection.length > 0} onClick={() => props.send("end_turn")}>{excessCards > 0 ? `还需弃 ${excessCards} 张` : "结束回合"} <b>→</b></button>
-            </div>
           </div>
-          <div className={`hand-cards ${selectingDiscard ? "selecting-discard" : ""}`}>
+          <div className={`hand-cards ${handView === "creatures" ? "creature-view" : ""} ${selectingDiscard ? "selecting-discard" : ""}`}>
             <AnimatePresence>
-              {match.you.hand_cards.map((cardId, index) => {
+              {[...visibleHandCards.map((cardId) => ({ kind: "card" as const, cardId })), ...visibleCreatures.map((creature) => ({ kind: "creature" as const, creature }))].map((item, rawIndex) => {
+                if (item.kind === "creature") {
+                  const creatureIndex = creatures.indexOf(item.creature);
+                  const activeTarget = activePlayTarget?.source === "creature" && activePlayTarget.index === creatureIndex;
+                  const totalCards = visibleCreatures.length;
+                  const middleIndex = (totalCards - 1) / 2;
+                  const dist = rawIndex - middleIndex;
+                  const spread = Math.min(130, 900 / Math.max(1, totalCards));
+                  const index = rawIndex;
+                  const translateX = dist * spread;
+                  const translateY = Math.abs(dist) * Math.abs(dist) * (spread < 100 ? 2.5 : 1.5);
+                  const rotate = dist * (spread < 100 ? 5 : 3.5);
+                  return (
+                    <motion.button layout="position" key={`creature-${item.creature.card_id}-${creatureIndex}`} initial={{ opacity: 0, y: 150, x: translateX - 50, scale: 0.5, rotate: -30 }} animate={{ opacity: 1, y: activeTarget ? translateY - 55 : translateY, x: translateX, scale: activeTarget ? 1.2 : 1, rotate: activeTarget ? 0 : rotate, zIndex: activeTarget ? 60 : index }} exit={{ opacity: 0, y: -200, scale: 1.2, transition: { duration: .15 } }} transition={{ type: "tween", ease: "circOut", duration: .2 }} whileHover={{ y: translateY - 80, scale: 1.35, rotate: 0, zIndex: 100 }} aria-pressed={activeTarget} className={`hand-card-button creature-hand-button ${activeTarget ? "press-selected" : ""}`} type="button" disabled={!canPlay} onMouseDown={() => beginPress("creature", creatureIndex)} onMouseUp={() => confirmPress("creature", creatureIndex)} onMouseLeave={() => cancelPress("creature", creatureIndex)}>
+                      <GameCard card={getCard(myCharacter, item.creature.card_id)} characterId={myCharacter} cardId={item.creature.card_id} cost={null} index={rawIndex} discardState="none" creatureHealth={item.creature.health} creatureShell={item.creature.shell} />
+                    </motion.button>
+                  );
+                }
+                const index = rawIndex;
+                const cardId = item.cardId;
                 const card = getCard(myCharacter, cardId);
                 const cost = match.you.card_costs?.[index] ?? card?.cost ?? null;
                 const discardable = match.you.card_discardable?.[index] ?? ![49, 50].includes(cardId);
                 const selected = discardSelection.includes(index);
                 const activeTarget = !selectingDiscard && activePlayTarget?.source === "hand" && activePlayTarget.index === index;
-                const discardTarget = selectingDiscard && discardDraft.indexes.includes(index);
+                const discardTarget = selectingDiscard && (
+                  activeDiscardTarget?.index === index || discardDraft.indexes.includes(index)
+                );
                 
+                const totalCards = handView === "cards" ? visibleHandCards.length : visibleCreatures.length;
+
                 // Calculate arc geometry explicitly with dynamic spread
-                const totalCards = match.you.hand_cards.length;
                 const middleIndex = (totalCards - 1) / 2;
                 const dist = index - middleIndex;
                 
@@ -816,17 +977,18 @@ function MatchScreen(props: {
                     key={`${cardId}-${index}`}
                     type="button"
                     disabled={selectingDiscard ? !myTurn || match.pending_choice || !discardable : !canPlay}
-                    onMouseDown={() => { if (selectingDiscard) toggleDiscard(index); else beginPress("hand", index); }}
-                    onMouseUp={() => { if (!selectingDiscard) confirmPress("hand", index); }}
-                    onMouseLeave={() => { if (!selectingDiscard) cancelPress("hand", index); }}
-                    onTouchStart={(event) => { if (!selectingDiscard) { event.preventDefault(); beginPress("hand", index); } }}
-                    onTouchEnd={(event) => { if (!selectingDiscard) { event.preventDefault(); confirmPress("hand", index); } }}
-                    onTouchCancel={() => { if (!selectingDiscard) cancelPress("hand", index); }}
+                    onMouseDown={() => { if (selectingDiscard) beginDiscardPress(index); else beginPress("hand", index); }}
+                    onMouseUp={() => { if (selectingDiscard) confirmDiscardPress(index); else confirmPress("hand", index); }}
+                    onMouseLeave={() => { if (selectingDiscard) cancelDiscardPress(index); else cancelPress("hand", index); }}
+                    onTouchStart={(event) => { event.preventDefault(); if (selectingDiscard) beginDiscardPress(index); else beginPress("hand", index); }}
+                    onTouchEnd={(event) => { event.preventDefault(); if (selectingDiscard) confirmDiscardPress(index); else confirmPress("hand", index); }}
+                    onTouchCancel={() => { if (selectingDiscard) cancelDiscardPress(index); else cancelPress("hand", index); }}
                     onKeyDown={(event) => {
                       if (event.key !== "Enter" && event.key !== " ") return;
                       event.preventDefault();
                       if (selectingDiscard) {
-                        toggleDiscard(index);
+                        beginDiscardPress(index);
+                        confirmDiscardPress(index);
                       } else {
                         beginPress("hand", index);
                         confirmPress("hand", index);
@@ -840,18 +1002,70 @@ function MatchScreen(props: {
             </AnimatePresence>
           </div>
         </div>
-        <LogPanel logs={props.logs} chatText={props.chatText} setChatText={props.setChatText} submitChat={props.submitChat} />
+        <div className="log-actions layout-region" data-region="actionPanel" style={{ transform: `translate(calc(-50% + ${regionOffsets.actionPanel.x}px), calc(0px + ${regionOffsets.actionPanel.y}px))` }} onPointerDown={(event) => startRegionDrag(event, "actionPanel")}>
+          <button type="button" className={`discard-toggle ${selectingDiscard ? "active" : ""}`} disabled={!myTurn || match.pending_choice || (!inPlay && !inDiscard)} onClick={() => setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: !(discardDraft.revision === match.revision && discardDraft.activePlayerId === match.active_player_id && discardDraft.mode), indexes: [] })}>{selectingDiscard ? "退出弃牌" : "进入弃牌"}</button>
+          <button type="button" className={`hand-view-toggle ${handView === "creatures" ? "active" : ""}`} aria-label={handView === "cards" ? "切换到手中生物" : "切换到手牌"} onClick={() => setHandView(handView === "cards" ? "creatures" : "cards")}>{handView === "cards" ? `生 ${creatures.length}` : `牌 ${match.you.hand_cards.length}`}</button>
+          <button type="button" className="settings-toggle" onClick={() => setSettingsOpen(true)}>界面</button>
+          <button type="button" className="layout-reset" onClick={resetRegionOffsets}>复位</button>
+          <button type="button" className="turn-end" disabled={!myTurn || match.pending_choice || (!inPlay && !inDiscard) || excessCards > 0} onClick={() => { setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: false, indexes: [] }); props.send("end_turn"); }}>{excessCards > 0 ? `还需弃 ${excessCards} 张` : "结束回合"} <b>→</b></button>
+        </div>
+        <div className="layout-region log-region" data-region="logPanel" style={{ position: "fixed", right: 40, bottom: 40, transform: `translate(${regionOffsets.logPanel.x}px, ${regionOffsets.logPanel.y}px)` }} onPointerDown={(event) => startRegionDrag(event, "logPanel")}>
+          <LogPanel logs={props.logs} chatText={props.chatText} setChatText={props.setChatText} submitChat={props.submitChat} />
+        </div>
       </section>
       {props.children}
       {localNotice && <Notice message={localNotice} close={() => setLocalNotice(null)} />}
       {settingsOpen && (
-        <SettingsDialog
+      <SettingsDialog
           layout={props.layout}
           interaction={props.interaction}
           onChangeLayout={updateMatchLayout}
           onChangeInteraction={updateMatchInteraction}
           close={() => setSettingsOpen(false)}
         />
+      )}
+      {deckViewer && (
+        <div className="modal-backdrop">
+          <section className="choice-dialog deck-viewer" role="dialog" aria-modal="true" aria-labelledby="deck-viewer-title">
+            <p className="eyebrow">DECK VIEW</p>
+            <h2 id="deck-viewer-title">{deckViewer === "draw" ? "抽牌堆" : "弃牌堆"}</h2>
+            <p>{deckViewer === "draw" ? "按卡牌类型分组显示当前抽牌堆。" : "按卡牌类型分组显示当前弃牌堆。"}</p>
+            {groupedViewerCards.length === 0 ? (
+              <p className="muted">当前牌堆为空。</p>
+            ) : (
+              groupedViewerCards.map(([type, cards]) => (
+                <section key={type} className="deck-group">
+                  <h3>{type} · {cards.reduce((total, item) => total + item.count, 0)}</h3>
+                  <div className="deck-grid">
+                    {cards.map(({ card, count }) => {
+                      const cardId = card.card_id;
+                      return (
+                        <button
+                          key={cardId}
+                          type="button"
+                          className="deck-card-button"
+                          title="右键查看放大卡面"
+                          onContextMenu={(event) => { event.preventDefault(); setPreviewedCard({ card, count }); }}
+                        >
+                          <GameCard card={card} characterId={myCharacter} cardId={cardId} cost={card.cost} index={count - 1} discardState="none" stackCount={count > 1 ? count : undefined} />
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))
+            )}
+            <footer><button type="button" onClick={() => setDeckViewer(null)}>关闭</button></footer>
+          </section>
+        </div>
+      )}
+      {previewedCard && (
+        <div className="modal-backdrop card-preview-backdrop" onClick={() => setPreviewedCard(null)} role="presentation">
+          <div className="card-preview" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} role="presentation">
+            <GameCard card={previewedCard.card} characterId={myCharacter} cardId={previewedCard.card.card_id} cost={previewedCard.card.cost} index={previewedCard.count - 1} discardState="none" stackCount={previewedCard.count > 1 ? previewedCard.count : undefined} />
+            <button type="button" onClick={() => setPreviewedCard(null)}>关闭预览</button>
+          </div>
+        </div>
       )}
     </main>
   );
@@ -914,7 +1128,7 @@ function cardImage(characterId: number, cardId: number) {
   return characterId === 1 ? `/cards/1/img-${cardId}.jpg` : null;
 }
 
-function GameCard({ card, characterId = 1, cardId, cost, index, discardState }: { card?: CardDefinition; characterId?: number; cardId: number; cost: number | null; index: number; discardState: "none" | "available" | "selected" | "blocked" }) {
+function GameCard({ card, characterId = 1, cardId, cost, index, discardState, creatureHealth, creatureShell, stackCount }: { card?: CardDefinition; characterId?: number; cardId: number; cost: number | null; index: number; discardState: "none" | "available" | "selected" | "blocked"; creatureHealth?: number; creatureShell?: boolean; stackCount?: number }) {
   const cardType = card?.card_type ?? "卡牌";
   const image = card ? cardImage(characterId, card.card_id) : null;
   return <article className={`game-card ${cardTone(cardType)} ${discardState !== "none" ? "discard-mode" : ""} ${discardState === "selected" ? "discard-selected" : ""}`}>
@@ -926,7 +1140,9 @@ function GameCard({ card, characterId = 1, cardId, cost, index, discardState }: 
       </div>
     </div>
     {image ? <Image className="card-art-image" src={image} alt="" width={320} height={220} /> : <div className="card-art"><span>{card?.name?.slice(0, 1) ?? "?"}</span></div>}
+    {typeof creatureHealth === "number" && <span className="creature-health-badge">♥ {creatureHealth}{creatureShell === false ? " · 破甲" : ""}</span>}
     <div className="card-copy"><strong>{card?.name ?? `卡牌 ${cardId}`}</strong><p><RuleText text={card?.description || "暂无卡牌说明"} /></p></div>
+    {typeof stackCount === "number" && <span className="stack-count-badge">× {stackCount}</span>}
     <small>#{String(index + 1).padStart(2, "0")} · ID {cardId}</small>
     {discardState !== "none" && <em>{discardState === "selected" ? "− 退回" : discardState === "blocked" ? "不可弃置" : "+ 选择弃置"}</em>}
   </article>;
@@ -994,12 +1210,27 @@ function SettingsDialog({ layout, interaction, onChangeLayout, onChangeInteracti
   </div>;
 }
 
-function LogPanel({ logs, chatText, setChatText, submitChat, compact = false }: { logs: LogEntry[]; chatText: string; setChatText: (value: string) => void; submitChat: (event: FormEvent) => void; compact?: boolean }) {
+function LogPanel({ logs, chatText, setChatText, submitChat, compact = false, handView, creatureCount, cardCount, onChangeHandView }: { logs: LogEntry[]; chatText: string; setChatText: (value: string) => void; submitChat: (event: FormEvent) => void; compact?: boolean; handView?: "cards" | "creatures"; creatureCount?: number; cardCount?: number; onChangeHandView?: (view: "cards" | "creatures") => void }) {
   const endRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
-  return <section className={`log-panel ${compact ? "compact" : ""}`}><div className="log-heading"><span>对局记录</span><small>LIVE LOG</small></div><div className="log-scroll">{logs.length ? logs.map((entry) => <p key={entry.id} className={entry.tone}><i />{entry.text}</p>) : <p className="muted"><i />等待消息…</p>}<div ref={endRef} /></div><form onSubmit={submitChat}><input aria-label="聊天消息" value={chatText} onChange={(event) => setChatText(event.target.value)} maxLength={200} placeholder="发送消息…" /><button type="submit">发送</button></form></section>;
+  return <section className={`log-panel ${compact ? "compact" : ""}`}>
+    <div className="log-heading"><span>对局记录</span><small>LIVE LOG</small></div>
+    <div className="log-scroll">{logs.length ? logs.map((entry) => <p key={entry.id} className={entry.tone}><i />{entry.text}</p>) : <p className="muted"><i />等待消息…</p>}<div ref={endRef} /></div>
+    {handView && onChangeHandView && (
+      <button
+        type="button"
+        className={`hand-view-toggle ${handView === "creatures" ? "active" : ""}`}
+        aria-label={handView === "cards" ? `切换到手中生物，共 ${creatureCount ?? 0} 张` : `切换到手牌，共 ${cardCount ?? 0} 张`}
+        onClick={() => onChangeHandView(handView === "cards" ? "creatures" : "cards")}
+      >
+        <span>{handView === "cards" ? "生" : "牌"}</span>
+        <b>{handView === "cards" ? creatureCount ?? 0 : cardCount ?? 0}</b>
+      </button>
+    )}
+    <form onSubmit={submitChat}><input aria-label="聊天消息" value={chatText} onChange={(event) => setChatText(event.target.value)} maxLength={200} placeholder="发送消息…" /><button type="submit">发送</button></form>
+  </section>;
 }
 
 function ChoiceDialog({ pending, value, setValue, selected, setSelected, match, resolve, cancel }: { pending: PendingChoice; value: number | string | null; setValue: (value: number | string | null) => void; selected: number[]; setSelected: (value: number[]) => void; match: MatchView; resolve: (value: unknown) => void; cancel: () => void }) {

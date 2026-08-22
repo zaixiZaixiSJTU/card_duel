@@ -116,11 +116,12 @@ class Room:
                 raise RuntimeError("角色状态在开局时意外丢失")
             deck_counts = registry.get_deck_counts(character_id)
             last_card_id = max(deck_counts, default=0)
+            player_seed = (seed ^ ((player_id * 0x9E3779B1) & 0x7FFFFFFF)) % (2**31)
             deck = build_shuffled_deck(
                 1,
                 last_card_id,
                 deck_counts,
-                random_seed=seed,
+                random_seed=player_seed,
             )
             zones[player_id] = CardZone(hand=deck[:2], draw_pile=deck[2:])
 
@@ -724,6 +725,8 @@ class RoomManager:
             "pending_choice": room.pending_action is not None,
             "you": {
                 "hand_cards": list(own_zone.hand),
+                "draw_pile": list(own_zone.draw_pile),
+                "discard_pile": list(own_zone.discard_pile),
                 "card_costs": self._card_costs(state, player_id, own_zone.hand),
                 "card_discardable": [
                     can_discard(state, player_id, card_id)
@@ -784,6 +787,17 @@ def _public_player_payload(player: CharacterState) -> dict[str, object]:
                 "pending_draw_returns",
             ):
                 status_payload.pop(private_name, None)
+            character_data = player.character_data
+            if character_data is not None:
+                character_data = player.character_data
+                unlocked = getattr(character_data, "unlocked_creature_counts", None)
+                discoveries = getattr(character_data, "discovery_pool", None)
+                if unlocked is not None:
+                    status_payload["unlocked_creature_counts"] = {
+                        str(card_id): count for card_id, count in unlocked.items()
+                    }
+                if discoveries is not None:
+                    status_payload["discovery_pool"] = list(discoveries)
             payload[item.name] = _json_value(status_payload)
         else:
             payload[item.name] = _json_value(getattr(player, item.name))

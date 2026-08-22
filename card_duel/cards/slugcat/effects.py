@@ -321,7 +321,7 @@ def trouble(context):
         f"{SLUGCAT_SPECS_BY_ID[creature_id].name}加入玩家{destination}手牌，并抽2张牌"
     )
     if creature_id == 25:
-        context.announce(
+        context.announce_private(
             f"拾荒者携带物品：{SLUGCAT_SPECS_BY_ID[creature.held_item].name}"
         )
     return True

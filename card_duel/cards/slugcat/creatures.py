@@ -399,9 +399,10 @@ def on_creature_death(
         else:
             statuses.pending_hand_additions.append(item)
         announce("拾荒者掉落了携带的物品")
-        (private_announce or announce)(
-            f"获得物品：{SLUGCAT_SPECS_BY_ID[item].name}（仅自己可见）"
-        )
+        if private_announce is not None:
+            private_announce(f"获得物品：{SLUGCAT_SPECS_BY_ID[item].name}（仅自己可见）")
+        else:
+            announce(f"获得物品：{SLUGCAT_SPECS_BY_ID[item].name}（仅自己可见）")
 
     if card_id == 25 and isinstance(
         state.players[player_id].character_data, SlugcatData
