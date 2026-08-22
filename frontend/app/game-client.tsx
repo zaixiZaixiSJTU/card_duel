@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 
 import { GameTooltip } from "./components/game-tooltip";
 import {
@@ -335,7 +336,7 @@ export function GameClient() {
             cancel={() => send("cancel_choice", { choice_id: choice.choice_id })}
           />
         )}
-        {notice && <Notice message={notice} close={() => setNotice(null)} />}
+        <AnimatePresence>{notice && <Notice message={notice} close={() => setNotice(null)} />}</AnimatePresence>
       </MatchScreen>
     );
   }
@@ -358,7 +359,7 @@ export function GameClient() {
         setRoundOneSafe={setRoundOneSafe}
         configureRoom={configureRoom}
       >
-        {notice && <Notice message={notice} close={() => setNotice(null)} />}
+        <AnimatePresence>{notice && <Notice message={notice} close={() => setNotice(null)} />}</AnimatePresence>
       </LobbyScreen>
     );
   }
@@ -408,7 +409,7 @@ export function GameClient() {
         </aside>
       </section>
       <PhaseFooter />
-      {notice && <Notice message={notice} close={() => setNotice(null)} />}
+      <AnimatePresence>{notice && <Notice message={notice} close={() => setNotice(null)} />}</AnimatePresence>
     </main>
   );
 }
@@ -560,7 +561,25 @@ function MatchScreen(props: {
         <div className="creature-lane opponent-creatures">{opponent.statuses.hand_creatures.map((creature, index) => <CreatureChip key={`${creature.card_id}-${index}`} creature={creature} card={getCard(opponentCharacter, creature.card_id)} />)}</div>
         <div className="last-played">{lastCard ? <MiniCard card={lastCard} cost={lastCard.cost} /> : <div className="empty-played"><span>LAST PLAYED</span><b>等待出牌</b></div>}</div>
         <div className="creature-lane own-creatures">{creatures.map((creature, index) => <button key={`${creature.card_id}-${index}`} type="button" disabled={!myTurn || !inPlay || match.pending_choice} onClick={() => props.send("play_card", { source: "creature", index })}><CreatureChip creature={creature} card={getCard(myCharacter, creature.card_id)} /></button>)}</div>
-        <div className="turn-banner"><i /><span>{myTurn ? "你的回合" : `玩家 ${opponentId} 行动中`}</span><small>{match.current_phase}</small><i /></div>
+        <AnimatePresence mode="wait">
+          <motion.div 
+            className="turn-banner"
+            key={String(match.current_phase) + String(myTurn)}
+            initial={{ opacity: 0, scale: 0.8, filter: "blur(10px)", backgroundColor: "rgba(0,0,0,0)" }}
+            animate={{ 
+              opacity: [0, 1, 1, 0], 
+              scale: [0.8, 1, 1, 1.1], 
+              filter: ["blur(10px)", "blur(0px)", "blur(0px)", "blur(10px)"],
+              backgroundColor: ["rgba(0,0,0,0)", "rgba(0,0,0,0.7)", "rgba(0,0,0,0.7)", "rgba(0,0,0,0)"]
+            }}
+            transition={{ duration: 2, times: [0, 0.15, 0.85, 1], ease: "easeInOut" }}
+          >
+            <div className="turn-banner-content">
+              <i /><span>{myTurn ? "你的回合" : `玩家 ${opponentId} 行动中`}</span><i />
+            </div>
+            <small>{match.current_phase}</small>
+          </motion.div>
+        </AnimatePresence>
       </section>
 
       <section className="player-zone">
@@ -576,13 +595,62 @@ function MatchScreen(props: {
               <button type="button" className="turn-end" disabled={!myTurn || match.pending_choice || (!inPlay && !inDiscard) || excessCards > 0 || discardSelection.length > 0} onClick={() => props.send("end_turn")}>{excessCards > 0 ? `还需弃 ${excessCards} 张` : "结束回合"} <b>→</b></button>
             </div>
           </div>
-          <div className={`hand-cards ${selectingDiscard ? "selecting-discard" : ""}`}>{match.you.hand_cards.map((cardId, index) => {
-            const card = getCard(myCharacter, cardId);
-            const cost = match.you.card_costs?.[index] ?? card?.cost ?? null;
-            const discardable = match.you.card_discardable?.[index] ?? ![49, 50].includes(cardId);
-            const selected = discardSelection.includes(index);
-            return <button aria-pressed={selectingDiscard ? selected : undefined} className={`hand-card-button ${selected ? "discard-selected" : ""}`} key={`${cardId}-${index}`} type="button" disabled={!myTurn || match.pending_choice || (selectingDiscard ? !discardable : !inPlay)} onClick={() => selectingDiscard ? toggleDiscard(index) : props.send("play_card", { source: "hand", index })}><GameCard card={card} cardId={cardId} cost={cost} index={index} discardState={selectingDiscard ? selected ? "selected" : discardable ? "available" : "blocked" : "none"} /></button>;
-          })}</div>
+          <div className={`hand-cards ${selectingDiscard ? "selecting-discard" : ""}`}>
+            <AnimatePresence>
+              {match.you.hand_cards.map((cardId, index) => {
+                const card = getCard(myCharacter, cardId);
+                const cost = match.you.card_costs?.[index] ?? card?.cost ?? null;
+                const discardable = match.you.card_discardable?.[index] ?? ![49, 50].includes(cardId);
+                const selected = discardSelection.includes(index);
+                
+                // Calculate arc geometry explicitly with dynamic spread
+                const totalCards = match.you.hand_cards.length;
+                const middleIndex = (totalCards - 1) / 2;
+                const dist = index - middleIndex;
+                
+                // Dynamically adjust spacing based on hand size to prevent overlapping too much
+                // Max safe width is ~900px. If hand is small, spread them comfortably by 130px.
+                const spread = Math.min(130, 900 / Math.max(1, totalCards)); 
+                const translateX = dist * spread;
+                
+                // Adjust arc height multiplier based on how packed the cards are
+                const translateY = Math.abs(dist) * Math.abs(dist) * (spread < 100 ? 2.5 : 1.5);
+                const rotate = dist * (spread < 100 ? 5 : 3.5);
+
+                return (
+                  <motion.button
+                    layout="position"
+                    initial={{ opacity: 0, y: 150, x: translateX - 50, scale: 0.5, rotate: -30 }}
+                    animate={{ 
+                      opacity: 1, 
+                      y: selected ? translateY - 40 : translateY, 
+                      x: translateX, 
+                      scale: selected ? 1.1 : 1, 
+                      rotate: selected ? 0 : rotate,
+                      zIndex: selected ? 50 : index // Natural left-to-right stacking
+                    }}
+                    exit={{ opacity: 0, y: -200, scale: 1.2, transition: { duration: 0.15 } }}
+                    transition={{ type: "tween", ease: "circOut", duration: 0.2 }}
+                    whileHover={{ 
+                      y: translateY - 80, 
+                      scale: 1.35, 
+                      rotate: 0, 
+                      zIndex: 100, 
+                      transition: { type: "tween", ease: "easeOut", duration: 0.1 } 
+                    }}
+                    aria-pressed={selectingDiscard ? selected : undefined}
+                    className={`hand-card-button ${selected ? "discard-selected" : ""}`}
+                    key={`${cardId}-${index}-${match.revision}`} // Force re-animation on draw by ensuring unique keys if needed, but index is standard. Let's stick to unique cardId if possible, but the game uses index for playing. Using cardId-index is okay.
+                    type="button"
+                    disabled={!myTurn || match.pending_choice || (selectingDiscard ? !discardable : !inPlay)}
+                    onClick={() => selectingDiscard ? toggleDiscard(index) : props.send("play_card", { source: "hand", index })}
+                  >
+                    <GameCard card={card} cardId={cardId} cost={cost} index={index} discardState={selectingDiscard ? selected ? "selected" : discardable ? "available" : "blocked" : "none"} />
+                  </motion.button>
+                );
+              })}
+            </AnimatePresence>
+          </div>
         </div>
         <LogPanel logs={props.logs} chatText={props.chatText} setChatText={props.setChatText} submitChat={props.submitChat} />
       </section>
@@ -685,4 +753,17 @@ function ChoiceDialog({ pending, value, setValue, selected, setSelected, match, 
   </section></div>;
 }
 
-function Notice({ message, close }: { message: string; close: () => void }) { return <div className="notice" role="alert"><span>!</span><p>{message}</p><button type="button" onClick={close}>×</button></div>; }
+function Notice({ message, close }: { message: string; close: () => void }) { 
+  return (
+    <motion.div 
+      className="notice" 
+      role="alert"
+      initial={{ opacity: 0, x: 50, scale: 0.9 }}
+      animate={{ opacity: 1, x: 0, scale: 1 }}
+      exit={{ opacity: 0, x: 50, scale: 0.9 }}
+      transition={{ type: "spring", stiffness: 400, damping: 25 }}
+    >
+      <span>!</span><p>{message}</p><button type="button" onClick={close}>×</button>
+    </motion.div>
+  ); 
+}
