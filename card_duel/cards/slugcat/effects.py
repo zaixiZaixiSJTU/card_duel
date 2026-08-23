@@ -26,7 +26,13 @@ from card_duel.cards.slugcat.specs import (
     SLUGCAT_SPECS_BY_ID,
     discovery_karma_gain,
 )
-from card_duel.cards.slugcat.state import MAX_KARMA, slugcat_data
+from card_duel.cards.slugcat.state import (
+    MAX_KARMA,
+    MAX_SATIETY,
+    gain_satiety,
+    has_form,
+    slugcat_data,
+)
 from card_duel.core.models import InsertedCardState
 from card_duel.core.rules import add_card_to_hand
 
@@ -119,7 +125,7 @@ def _attack(card_id: int, base_damage: int, on_penetrate=None):
         if not _pay_cost(context, card_id):
             return False
         data = slugcat_data(context.source)
-        artisan = 56 in data.ability_unlocks
+        artisan = has_form(data, 56)
         penetrate = on_penetrate
         if artisan and card_id in (5, 61) and data.satiety > 0:
             data.satiety -= 1
@@ -127,7 +133,7 @@ def _attack(card_id: int, base_damage: int, on_penetrate=None):
             if penetrate is None:
                 penetrate = _insert_explosive_spear
         damage = base_damage + (
-            2 if card_id in SLUGCAT_SPEAR_IDS and 36 in data.ability_unlocks else 0
+            2 if card_id in SLUGCAT_SPEAR_IDS and has_form(data, 36) else 0
         )
         if card_id == 2 and artisan and data.satiety > 0:
             data.satiety -= 1
@@ -142,8 +148,8 @@ def _attack(card_id: int, base_damage: int, on_penetrate=None):
             penetrate,
         )
         if card_id == 61 and life_loss > 0:
-            data.satiety += 1
-            context.announce("骨矛造成血量损失，饱食+1")
+            gained = gain_satiety(data, 1)
+            context.announce(f"骨矛造成血量损失，饱食+{gained}")
         return True
 
     return effect
@@ -186,7 +192,7 @@ def explosive(context):
     if not _pay_cost(context, 3):
         return False
     data = slugcat_data(context.source)
-    artisan = 56 in data.ability_unlocks and data.satiety > 0
+    artisan = has_form(data, 56) and data.satiety > 0
     if artisan:
         data.satiety -= 1
         context.announce("爆炸工匠：炸药不再自伤")
@@ -282,15 +288,15 @@ def forage(context):
         return False
     gained = math.ceil(context.source.statuses.last_dead_creature_health / 5)
     data = slugcat_data(context.source)
-    data.satiety += gained
+    actual = gain_satiety(data, gained)
     context.source.statuses.last_dead_creature_health = 0
-    if gained > 0:
+    if actual > 0:
         data.forage_satiety_count += 1
         if data.forage_satiety_count >= 3:
             unlock_ability_card(context.source, 38, announce=context.announce)
     draw_non_creatures(context.state, 1)
     context.announce(
-        f"玩家{context.source_player_id}觅食，获得{gained}点饱食度并抽1张牌"
+        f"玩家{context.source_player_id}觅食，获得{actual}点饱食度并抽1张牌"
     )
     return True
 
@@ -315,6 +321,11 @@ def run_away(context):
         return_creature_to_owner_pool(context.state, creature)
     obtained = 0
     seen = set(data.seen_discoveries)
+    if not data.discovery_pool and data.discovery_discard:
+        # 见闻抽牌堆（discovery_pool）空时，把见闻弃牌堆洗回。
+        random.shuffle(data.discovery_discard)
+        data.discovery_pool.extend(data.discovery_discard)
+        data.discovery_discard.clear()
     for _ in range(draw_count):
         if data.discovery_pool:
             index = next(
@@ -339,6 +350,14 @@ def trouble(context):
     if not _pay_cost(context, 15):
         return False
     data = slugcat_data(context.source)
+    if not data.unlocked_creature_counts and data.creature_discard:
+        # 生物抽牌堆（召唤池）空时，把生物弃牌堆洗回。
+        random.shuffle(data.creature_discard)
+        for creature_id in data.creature_discard:
+            data.unlocked_creature_counts[creature_id] = (
+                data.unlocked_creature_counts.get(creature_id, 0) + 1
+            )
+        data.creature_discard.clear()
     # 按 unlocked_creature_counts 加权随机：count 即为可召唤数量，召唤后 -1，减到 0 删除
     if data.unlocked_creature_counts:
         pool_ids = list(data.unlocked_creature_counts.keys())
@@ -377,7 +396,7 @@ def _creature(card_id: int):
     def effect(context):
         spec = SLUGCAT_SPECS_BY_ID[card_id]
         data = slugcat_data(context.source)
-        watcher = 40 in data.ability_unlocks
+        watcher = has_form(data, 40)
         if not watcher and spec.cost is None:
             context.announce(f"{spec.name}不可主动打出")
             return False
@@ -403,8 +422,13 @@ def _creature(card_id: int):
                 f"玩家{context.target_player_id}手牌"
             )
         else:
-            # 打出生物 = 躲避：消耗能量后生物离开手牌，回合结束不再造成伤害。
-            remove_hand_creature(context.state, context.source_player_id, card_id)
+            # 打出生物 = 躲避：生物离开手牌，回合结束不再造成伤害；
+            # 未被杀死，进入生物弃牌堆，之后猫闯祸可洗回召唤池。
+            creature = remove_hand_creature(
+                context.state, context.source_player_id, card_id
+            )
+            if creature is not None:
+                data.creature_discard.append(card_id)
             context.announce(f"玩家{context.source_player_id}打出了{spec.name}")
         return True
 
@@ -536,8 +560,8 @@ def flash_fruit(context):
 def blue_fruit(context):
     if not _pay_cost(context, 44):
         return False
-    slugcat_data(context.source).satiety += 1
-    context.announce(f"玩家{context.source_player_id}吃下蓝果，饱食度+1")
+    gained = gain_satiety(slugcat_data(context.source), 1)
+    context.announce(f"玩家{context.source_player_id}吃下蓝果，饱食度+{gained}")
     return True
 
 
@@ -552,8 +576,8 @@ def bubble_fruit(context):
     if mode is None:
         return False
     if mode == "fruit":
-        data.satiety += 1
-        context.announce(f"玩家{context.source_player_id}把泡水果当作蓝果")
+        gained = gain_satiety(data, 1)
+        context.announce(f"玩家{context.source_player_id}把泡水果当作蓝果，饱食度+{gained}")
         return True
     if not _pay_cost(context, 45):
         return False
@@ -614,6 +638,18 @@ def mass_battery(context):
     return True
 
 
+def popcorn(context):
+    if not _pay_cost(context, 59):
+        return False
+    data = slugcat_data(context.source)
+    gained = gain_satiety(data, MAX_SATIETY)
+    context.announce(
+        f"玩家{context.source_player_id}吃爆米花，饱食度+{gained}"
+        f"（{data.satiety}/{MAX_SATIETY}）"
+    )
+    return True
+
+
 def karma_flower(context):
     if not _pay_cost(context, 51):
         return False
@@ -663,6 +699,7 @@ CARD_EFFECTS = {
     46: white_pearl,
     47: colored_pearl,
     48: mass_battery,
+    59: popcorn,
     51: karma_flower,
     61: _attack(61, 3),
     58: transcendence,

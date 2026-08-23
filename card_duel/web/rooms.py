@@ -798,6 +798,7 @@ def _public_player_payload(player: CharacterState) -> dict[str, object]:
                 "pending_hand_additions",
                 "pending_hand_removals",
                 "pending_draw_returns",
+                "pending_draw_additions",
             ):
                 status_payload.pop(private_name, None)
             character_data = player.character_data
@@ -813,7 +814,12 @@ def _public_player_payload(player: CharacterState) -> dict[str, object]:
                     status_payload["discovery_pool"] = list(discoveries)
             payload[item.name] = _json_value(status_payload)
         else:
-            payload[item.name] = _json_value(getattr(player, item.name))
+            converted = _json_value(getattr(player, item.name))
+            if item.name == "character_data" and isinstance(converted, dict):
+                # 私有牌堆不向对方展示：见闻弃牌堆、生物弃牌堆。
+                converted.pop("discovery_discard", None)
+                converted.pop("creature_discard", None)
+            payload[item.name] = converted
     payload["defence"] = player.defence
     return payload
 

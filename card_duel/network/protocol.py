@@ -273,6 +273,8 @@ def _apply_local_pending_actions(session) -> None:
 
     state.hand_cards.extend(statuses.pending_hand_additions)
     statuses.pending_hand_additions.clear()
+    state.draw_pile.extend(statuses.pending_draw_additions)
+    statuses.pending_draw_additions.clear()
     for card_id in statuses.pending_hand_removals:
         with suppress(ValueError):
             state.hand_cards.remove(card_id)
@@ -327,6 +329,7 @@ def _clear_transient_queues(state) -> None:
         player.statuses.pending_hand_additions.clear()
         player.statuses.pending_hand_removals.clear()
         player.statuses.pending_draw_returns.clear()
+        player.statuses.pending_draw_additions.clear()
 
 
 def _dataclass_payload(instance):

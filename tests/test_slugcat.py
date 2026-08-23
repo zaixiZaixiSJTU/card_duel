@@ -93,10 +93,57 @@ class SlugcatTests(unittest.TestCase):
                 46,
             },
         )
-        self.assertEqual(sum(counts.values()), 102)
+        self.assertEqual(sum(counts.values()), 49)
         self.assertTrue(set(counts).isdisjoint(range(16, 36)))
         self.assertTrue(set(counts).isdisjoint((49, 50)))
         self.assertTrue(set(counts).isdisjoint(SLUGCAT_FORM_IDS))
+
+    def test_satiety_is_capped_at_six(self):
+        data = slugcat_data(self.game.players[1])
+        data.satiety = 5
+        self.game.players[1].energy = 5
+
+        self.assertTrue(self.play(44))
+        self.assertEqual(data.satiety, 6)
+
+        data.satiety = 3
+        self.assertTrue(self.play(59))
+        self.assertEqual(data.satiety, 6)
+
+    def test_popcorn_grants_full_satiety(self):
+        data = slugcat_data(self.game.players[1])
+        data.satiety = 1
+        self.game.players[1].energy = 3
+
+        self.assertTrue(self.play(59))
+
+        self.assertEqual(data.satiety, 6)
+
+    def test_slugcat_draw_reshuffles_discard_when_draw_empty(self):
+        from card_duel.application.turns import draw_slugcat_cards
+
+        self.game.draw_pile = []
+        self.game.discard_pile = [6, 44, 8]
+
+        drawn = draw_slugcat_cards(self.game, 2, 1, self.messages.append)
+
+        self.assertEqual(drawn, 3)
+        self.assertEqual(len(self.game.hand_cards), 3)
+        self.assertEqual(self.game.discard_pile, [])
+
+    def test_chaos_stomach_turn_start_discards_and_reshuffles_draw(self):
+        data = slugcat_data(self.game.players[1])
+        data.form = "混沌胃袋"
+        self.game.hand_cards[:] = [1, 6]
+        self.game.draw_pile = []
+        self.game.discard_pile = [44, 8]
+
+        turn = TurnEngine(self.game, 1, 1, self.messages.append)
+        self.combat.register_turn_handlers(turn)
+        turn.enter_phase(TurnPhase.TURN_START)
+
+        self.assertEqual(self.game.discard_pile, [])
+        self.assertEqual(len(self.game.hand_cards), 2)  # 弃1抽1
 
     def test_karma_growth_reaches_ten_and_unlocks_triple_affirmation(self):
         data = slugcat_data(self.game.players[1])
@@ -125,11 +172,12 @@ class SlugcatTests(unittest.TestCase):
         self.assertEqual(self.game.players[1].statuses.hand_creatures, [])
         self.assertFalse(any("引来面条蝇" in message for message in self.messages))
 
+        data.form = "僧侣"  # 打出僧侣形态后才触发业力花
         self.game.players[1].energy = 5
 
         self.combat.apply_damage(5, 1)
 
-        self.assertIn(51, self.game.hand_cards)
+        self.assertIn(51, self.game.players[1].statuses.pending_draw_additions)
 
         self.assertTrue(self.play(51))
         self.assertTrue(data.karma_flower_pending)
@@ -168,7 +216,7 @@ class SlugcatTests(unittest.TestCase):
 
     def test_explosion_artisan_bomb_stone_and_no_self_damage(self):
         data = slugcat_data(self.game.players[1])
-        data.ability_unlocks.add(56)
+        data.form = "爆炸工匠"
         data.satiety = 2
         self.game.players[1].energy = 5
 
@@ -183,7 +231,7 @@ class SlugcatTests(unittest.TestCase):
 
     def test_watcher_moves_creatures_to_opponent_free(self):
         data = slugcat_data(self.game.players[1])
-        data.ability_unlocks.add(40)
+        data.form = "观望者"
         add_hand_creature(self.game, 1, 20, owner_id=1)
         self.game.players[1].energy = 0
 
@@ -197,7 +245,7 @@ class SlugcatTests(unittest.TestCase):
 
     def test_wave_dancer_returns_first_skill_to_hand(self):
         data = slugcat_data(self.game.players[1])
-        data.ability_unlocks.add(37)
+        data.form = "波浪舞者"
         self.game.hand_cards[:] = [6, 8]
 
         return_card_after_use(self.game, 1, 6, from_play=True)
@@ -276,9 +324,70 @@ class SlugcatTests(unittest.TestCase):
 
     def test_hunter_hand_bonus_raises_hand_limit(self):
         self.assertEqual(hand_limit_for(self.game, 1), 4)
-        slugcat_data(self.game.players[1]).hunter_hand_bonus = 1
+        data = slugcat_data(self.game.players[1])
+        data.hunter_hand_bonus = 1
+        self.assertEqual(hand_limit_for(self.game, 1), 4)  # 未打出猎手形态不生效
+        data.form = "猎手"
         self.assertEqual(hand_limit_for(self.game, 1), 5)
         self.assertEqual(hand_limit_for(self.game, 2), 4)
+
+    def test_playing_creature_goes_to_creature_discard(self):
+        data = slugcat_data(self.game.players[1])
+        add_hand_creature(self.game, 1, 20, owner_id=1)
+        self.game.players[1].energy = 2
+
+        self.assertTrue(self.play(20))
+
+        self.assertEqual(self.game.players[1].statuses.hand_creatures, [])
+        self.assertIn(20, data.creature_discard)
+        self.assertEqual(data.unlocked_creature_counts[20], 3)  # 召唤池不变
+
+    def test_trouble_reshuffles_creature_discard_when_pool_empty(self):
+        data = slugcat_data(self.game.players[1])
+        data.unlocked_creature_counts = {}
+        data.creature_discard = [20, 16]
+        self.game.players[1].energy = 3
+
+        self.assertTrue(self.play(15))
+
+        self.assertEqual(data.creature_discard, [])
+        self.assertEqual(sum(data.unlocked_creature_counts.values()), 1)
+        self.assertEqual(len(self.game.players[1].statuses.hand_creatures), 1)
+
+    def test_discovery_cycles_through_its_own_discard(self):
+        data = slugcat_data(self.game.players[1])
+        data.discovery_pool = []
+        self.game.players[1].energy = 2
+
+        self.assertTrue(self.play(27))
+        return_card_after_use(self.game, 1, 27, from_play=True)
+
+        self.assertIn(27, data.discovery_discard)
+        self.assertNotIn(27, data.discovery_pool)
+
+        data.discovery_pool = []
+        self.game.players[1].energy = 2
+        self.assertTrue(self.play(14))
+
+        self.assertEqual(data.discovery_discard, [])
+        self.assertIn(27, self.game.hand_cards)
+
+    def test_slugcat_draw_reshuffles_only_own_type(self):
+        from card_duel.application.turns import draw_slugcat_cards
+
+        # 技能缺牌时只洗技能弃牌回来，物品留在抽牌堆不动
+        self.game.draw_pile = [44]
+        self.game.discard_pile = [6, 8]
+        self.assertEqual(draw_slugcat_cards(self.game, 2, 0, self.messages.append), 2)
+        self.assertIn(44, self.game.draw_pile)
+        self.assertEqual(self.game.discard_pile, [])
+
+        # 技能缺牌但弃牌堆里只有物品 -> 不跨类型拉取
+        self.game.hand_cards.clear()
+        self.game.draw_pile = [6]
+        self.game.discard_pile = [44]
+        self.assertEqual(draw_slugcat_cards(self.game, 2, 0, self.messages.append), 1)
+        self.assertEqual(self.game.discard_pile, [44])
 
     def test_attack_converts_all_momentum_into_damage(self):
         slugcat_data(self.game.players[1]).momentum = 4
@@ -327,7 +436,7 @@ class SlugcatTests(unittest.TestCase):
         self.assertEqual(len(self.game.draw_pile), 8)
         self.assertEqual(
             slugcat_data(self.game.players[1]).unlocked_creature_counts,
-            {25: 5, 18: 3, 19: 1},
+            {25: 3, 18: 2, 19: 1},
         )
         self.assertTrue(slugcat_data(self.game.players[1]).discovery_pool)
 
@@ -372,13 +481,13 @@ class SlugcatTests(unittest.TestCase):
 
     def test_discovery_unlocks_all_neighbors_and_replaces_scene(self):
         self.game.players[1].energy = 2
-        self.game.draw_pile[:] = [1, 6, 44]
+        self.game.draw_pile[:] = [46, 6, 44]
 
         self.assertTrue(self.play(27))
 
         data = slugcat_data(self.game.players[1])
         self.assertTrue({28, 29, 32}.issubset(data.discovery_pool))
-        self.assertNotIn(1, self.game.draw_pile)
+        self.assertNotIn(46, self.game.draw_pile)
         self.assertNotIn(44, self.game.draw_pile)
         self.assertIn(6, self.game.draw_pile)
 
@@ -577,11 +686,34 @@ class SlugcatTests(unittest.TestCase):
 
         self.assertEqual(self.game.players[1].health, 20)
         self.assertEqual(
-            [item.card_id for item in self.game.players[1].statuses.creature_threats],
-            [19],
+            [item.card_id for item in self.game.players[1].statuses.hand_creatures],
+            [18, 19],
         )
-        self.assertTrue(any("引来一张秃鹫" in message for message in self.messages))
+        self.assertTrue(any("引来一只秃鹫" in message for message in self.messages))
         self.assertFalse(any("造成10点伤害" in message for message in self.messages))
+
+    def test_ray_worm_summons_vulture_once_per_throw(self):
+        add_hand_creature(self.game, 1, 18, owner_id=1)
+        self.game.players[1].health = 20
+
+        self._run_turn_end(DEFAULT_CHOICES)
+        self.assertTrue(hand_creature(self.game, 1, 18).vulture_summoned)
+
+        # 第二回合结束不再重复召唤
+        self._run_turn_end(DEFAULT_CHOICES)
+        vultures = [
+            item
+            for item in self.game.players[1].statuses.hand_creatures
+            if item.card_id == 19
+        ]
+        self.assertEqual(len(vultures), 1)
+
+        # 扔给对方是新实例，重新可召唤
+        self.game.players[1].energy = 1
+        self.assertTrue(self.play(18))
+        transferred = hand_creature(self.game, 2, 18)
+        self.assertIsNotNone(transferred)
+        self.assertFalse(transferred.vulture_summoned)
 
     def test_creatures_do_not_occupy_hand_slots(self):
         for card_id in (16, 20, 23):

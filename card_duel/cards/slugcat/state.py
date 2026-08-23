@@ -2,9 +2,10 @@
 
 from dataclasses import dataclass, field
 
-from card_duel.cards.slugcat.specs import SLUGCAT_CARD_SPECS
+from card_duel.cards.slugcat.specs import FORM_NAMES, SLUGCAT_CARD_SPECS
 
 MAX_KARMA = 10
+MAX_SATIETY = 6
 SLUGCAT_HEALTH = 5
 
 
@@ -12,6 +13,7 @@ SLUGCAT_HEALTH = 5
 class SlugcatData:
     karma: int = 3
     karma_max: int = 3
+    satiety_max: int = MAX_SATIETY
     agility: int = 0
     momentum: int = 0
     satiety: int = 0
@@ -20,6 +22,7 @@ class SlugcatData:
     form: str = "普通"
     seen_discoveries: list[int] = field(default_factory=list)
     discovery_pool: list[int] = field(default_factory=lambda: [27])
+    discovery_discard: list[int] = field(default_factory=list)
     unlocked_creature_counts: dict[int, int] = field(
         default_factory=lambda: {
             spec.card_id: spec.source_count
@@ -27,6 +30,7 @@ class SlugcatData:
             if 16 <= spec.card_id <= 26 and spec.source_count > 0
         }
     )
+    creature_discard: list[int] = field(default_factory=list)
     redirect_creatures_to_opponent: bool = False
     discovery_discount: dict[int, int] = field(default_factory=dict)
     next_bubble_mode: str | None = None
@@ -56,3 +60,15 @@ def slugcat_data(player) -> SlugcatData:
     if not isinstance(player.character_data, SlugcatData):
         raise TypeError("当前玩家不是蛞蝓猫或尚未初始化")
     return player.character_data
+
+
+def gain_satiety(data: SlugcatData, amount: int) -> int:
+    """Gain satiety capped at the maximum (6)."""
+    previous = data.satiety
+    data.satiety = min(MAX_SATIETY, data.satiety + max(0, amount))
+    return data.satiety - previous
+
+
+def has_form(data: SlugcatData, form_id: int) -> bool:
+    """A form passive only applies while that form card has been played."""
+    return data.form == FORM_NAMES[form_id]

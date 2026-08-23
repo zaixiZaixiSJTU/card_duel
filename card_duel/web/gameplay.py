@@ -434,6 +434,8 @@ def _apply_pending_zones(room: MatchRoomPort, announce) -> None:
         statuses = player.statuses
         state.hand_cards.extend(statuses.pending_hand_additions)
         statuses.pending_hand_additions.clear()
+        state.draw_pile.extend(statuses.pending_draw_additions)
+        statuses.pending_draw_additions.clear()
         for card_id in statuses.pending_hand_removals:
             with suppress(ValueError):
                 state.hand_cards.remove(card_id)

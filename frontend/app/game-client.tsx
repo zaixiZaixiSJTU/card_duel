@@ -1149,7 +1149,12 @@ function PlayerStatus({ label, character, player, active }: { label: string; cha
     .filter(([key, value]) => typeof value === "number" && statusExplanation(key))
     .map(([key, value]) => ({
       key,
-      value: key === "karma" && typeof data.karma_max === "number" ? `${value}/${data.karma_max}` : String(value),
+      value:
+        key === "karma" && typeof data.karma_max === "number"
+          ? `${value}/${data.karma_max}`
+          : key === "satiety" && typeof data.satiety_max === "number"
+            ? `${value}/${data.satiety_max}`
+            : String(value),
     }));
   if (typeof data.form === "string") detail.unshift({ key: "form", value: data.form });
   return (
@@ -1162,8 +1167,12 @@ function PlayerStatus({ label, character, player, active }: { label: string; cha
         <span className="energy-glyph">◆</span><span className="energy-copy"><small>能量</small><strong>{player.energy}</strong></span>
       </GameTooltip>
       <div className="secondary-stats">
-        <Stat icon="⬟" label="防御" value={player.defence} tone="defence" explanation={GAME_TERMS.defence} />
-        <Stat icon="↑" label="力量" value={player.strength} tone="strength" explanation={GAME_TERMS.strength} />
+        {character !== 4 && (
+          <>
+            <Stat icon="⬟" label="防御" value={player.defence} tone="defence" explanation={GAME_TERMS.defence} />
+            <Stat icon="↑" label="力量" value={player.strength} tone="strength" explanation={GAME_TERMS.strength} />
+          </>
+        )}
         {player.poison > 0 && <Stat icon="●" label="中毒" value={player.poison} tone="poison" explanation={GAME_TERMS.poison} />}
       </div>
       <GameTooltip className={`health-vital ${healthTone}`} explanation={{ ...GAME_TERMS.health, description: `当前生命为 ${player.health}/${maxHealth}。${GAME_TERMS.health.description}` }}>
@@ -1178,7 +1187,7 @@ function PlayerStatus({ label, character, player, active }: { label: string; cha
 }
 
 function Stat({ icon, label, value, tone, explanation }: { icon: string; label: string; value: number; tone: string; explanation: GameExplanation }) { return <GameTooltip className={`stat ${tone}`} explanation={explanation}><span className="stat-icon">{icon}</span><span className="stat-copy"><small>{label}</small><strong>{value}</strong></span></GameTooltip>; }
-function Pile({ label, count }: { label: string; count: number }) { return <GameTooltip className="pile-tooltip" explanation={label === "抽牌" ? GAME_TERMS.drawPile : GAME_TERMS.discardPile}><span className="pile"><span>{label}</span><strong>{count}</strong></span></GameTooltip>; }
+function Pile({ label, count }: { label: string; count: number }) { return <GameTooltip focusable={false} className="pile-tooltip" explanation={label === "抽牌" ? GAME_TERMS.drawPile : GAME_TERMS.discardPile}><span className="pile"><span>{label}</span><strong>{count}</strong></span></GameTooltip>; }
 function statusName(key: string) { return ({ form: "形态", karma: "业力", satiety: "饱食", agility: "敏捷", momentum: "动能", sacrifice_layers: "献祭", heartlink_layers: "心连心" } as Record<string, string>)[key] ?? key; }
 
 function RuleText({ text }: { text: string }) {

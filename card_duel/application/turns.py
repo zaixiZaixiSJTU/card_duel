@@ -2,12 +2,29 @@
 
 from __future__ import annotations
 
+import random
 from collections.abc import Sequence
 from contextlib import suppress
 
 from card_duel.core.rules import draw_cards
 
 HAND_LIMIT = 4
+
+
+def _reshuffle_discard_by_type(game_state, predicate) -> bool:
+    """Move only matching discard cards into the draw pile and shuffle.
+
+    Keeps each card type cycling on its own: drawing skills never pulls item
+    discard cards back, and vice versa.
+    """
+    picked = [card_id for card_id in game_state.discard_pile if predicate(card_id)]
+    if not picked:
+        return False
+    for card_id in picked:
+        game_state.discard_pile.remove(card_id)
+    game_state.draw_pile.extend(picked)
+    random.shuffle(game_state.draw_pile)
+    return True
 
 
 def draw_turn_cards(context, local_announce=None) -> None:
@@ -28,34 +45,44 @@ def draw_slugcat_cards(game_state, skill_count, item_count, announce) -> int:
 
     drawn = []
 
-    def draw_type(card_type, amount):
-        for _ in range(amount):
-            index = next(
-                (
-                    index
-                    for index, card_id in enumerate(game_state.draw_pile)
-                    if SLUGCAT_SPECS_BY_ID[card_id].card_type == card_type
-                ),
-                None,
-            )
-            if index is None:
-                break
-            drawn.append(game_state.draw_pile.pop(index))
+    def eligible(card_id, card_type):
+        return SLUGCAT_SPECS_BY_ID[card_id].card_type == card_type
 
-    draw_type("技能", skill_count)
-    draw_type("物品", item_count)
-    while len(drawn) < skill_count + item_count:
+    def reshuffle_matching(card_type):
+        return _reshuffle_discard_by_type(
+            game_state,
+            lambda cid: SLUGCAT_SPECS_BY_ID[cid].card_type == card_type,
+        )
+
+    def take(card_type):
         index = next(
             (
                 index
                 for index, card_id in enumerate(game_state.draw_pile)
-                if SLUGCAT_SPECS_BY_ID[card_id].card_type not in {"生物", "见闻"}
+                if eligible(card_id, card_type)
             ),
             None,
         )
+        if index is None and reshuffle_matching(card_type):
+            index = next(
+                (
+                    index
+                    for index, card_id in enumerate(game_state.draw_pile)
+                    if eligible(card_id, card_type)
+                ),
+                None,
+            )
         if index is None:
-            break
+            return False
         drawn.append(game_state.draw_pile.pop(index))
+        return True
+
+    for _ in range(skill_count):
+        if not take("技能"):
+            break
+    for _ in range(item_count):
+        if not take("物品"):
+            break
     game_state.hand_cards.extend(drawn)
     if drawn:
         names = "、".join(SLUGCAT_SPECS_BY_ID[card_id].name for card_id in drawn)
@@ -81,13 +108,13 @@ def return_card_after_use(
         SLUGCAT_DISCOVERY_IDS,
         SLUGCAT_SPECS_BY_ID,
     )
-    from card_duel.cards.slugcat.state import SlugcatData, slugcat_data
+    from card_duel.cards.slugcat.state import SlugcatData, has_form, slugcat_data
 
     player = game_state.players[player_id]
     if card_id in SLUGCAT_DISCOVERY_IDS and isinstance(
         player.character_data, SlugcatData
     ):
-        slugcat_data(player).discovery_pool.append(card_id)
+        slugcat_data(player).discovery_discard.append(card_id)
         return
     if from_play and isinstance(player.character_data, SlugcatData):
         data = slugcat_data(player)
@@ -95,7 +122,7 @@ def return_card_after_use(
         if (
             spec is not None
             and spec.card_type == "技能"
-            and 37 in data.ability_unlocks
+            and has_form(data, 37)
             and not data.wave_skill_returned
         ):
             # 波浪舞者：每回合第一张技能牌回到手牌。
@@ -108,9 +135,12 @@ def return_card_after_use(
 def hand_limit_for(game_state, player_id: int) -> int:
     """Rule-aware hand limit (hunter form adds +1 to the slugcat limit)."""
     if game_state.character_ids.get(player_id) == 4:
+        from card_duel.cards.slugcat.state import has_form
+
         data = getattr(game_state.players[player_id], "character_data", None)
-        bonus = getattr(data, "hunter_hand_bonus", 0) or 0
-        return HAND_LIMIT + bonus
+        if data is not None and has_form(data, 36):
+            return HAND_LIMIT + (getattr(data, "hunter_hand_bonus", 0) or 0)
+        return HAND_LIMIT
     return HAND_LIMIT
 
 

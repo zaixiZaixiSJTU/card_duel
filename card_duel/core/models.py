@@ -22,6 +22,7 @@ class CreatureState:
     noodle_cost: int = 0
     shell: bool = True
     held_item: int = 0
+    vulture_summoned: bool = False
 
 
 @dataclass(slots=True)
@@ -52,6 +53,7 @@ class CombatStatuses:
     pending_hand_additions: list[CardId] = field(default_factory=list)
     pending_hand_removals: list[CardId] = field(default_factory=list)
     pending_draw_returns: list[CardId] = field(default_factory=list)
+    pending_draw_additions: list[CardId] = field(default_factory=list)
     centipede_health: int = 0
 
 
