@@ -1,5 +1,6 @@
 """Authoritative WebSocket room and private-state tests."""
 
+import json
 import unittest
 from unittest.mock import patch
 
@@ -179,6 +180,37 @@ class RoomManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(
             "pending_hand_additions", host_state["players"]["2"]["statuses"]
         )
+
+    async def test_match_started_payload_is_json_serializable_with_slugcat(self):
+        """Slugcat character data uses sets; they must be normalized before send."""
+
+        code = await self.create_and_join()
+        await self.manager.handle(
+            self.host_id,
+            {"action": "select_character", "data": {"character_id": 4}},
+        )
+        self.host.pop("room_state")
+        self.guest.pop("room_state")
+        await self.manager.handle(
+            self.guest_id,
+            {"action": "select_character", "data": {"character_id": 4}},
+        )
+        self.host.pop("room_state")
+        self.guest.pop("room_state")
+        await self.manager.handle(
+            self.host_id, {"action": "set_ready", "data": {"ready": True}}
+        )
+        self.host.pop("room_state")
+        self.guest.pop("room_state")
+        await self.manager.handle(
+            self.guest_id, {"action": "set_ready", "data": {"ready": True}}
+        )
+
+        for sender in (self.host, self.guest):
+            match_started = sender.pop("match_started")
+            json.dumps(match_started)  # Must not raise TypeError for set fields.
+        room = self.manager.rooms[code]
+        self.assertEqual(room.status, "playing")
 
     async def test_same_seed_deals_differently_by_player_identity(self):
         await self.start_warrior_match()

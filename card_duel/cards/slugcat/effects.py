@@ -2,6 +2,7 @@
 
 import math
 import random
+from dataclasses import replace
 
 from card_duel.cards.slugcat.creatures import (
     add_hand_creature,
@@ -12,6 +13,7 @@ from card_duel.cards.slugcat.creatures import (
     return_creature_to_owner_pool,
 )
 from card_duel.cards.slugcat.hand import draw_non_creatures
+from card_duel.cards.slugcat.abilities import unlock_ability_card
 from card_duel.cards.slugcat.specs import (
     DISCOVERY_ADJACENCY,
     DISCOVERY_CONTENTS,
@@ -19,7 +21,10 @@ from card_duel.cards.slugcat.specs import (
     SLUGCAT_ATTACK_ITEM_IDS,
     SLUGCAT_CREATURE_IDS,
     SLUGCAT_DISCOVERY_IDS,
+    SLUGCAT_FORM_IDS,
+    SLUGCAT_SPEAR_IDS,
     SLUGCAT_SPECS_BY_ID,
+    discovery_karma_gain,
 )
 from card_duel.cards.slugcat.state import MAX_KARMA, slugcat_data
 from card_duel.core.models import InsertedCardState
@@ -46,6 +51,10 @@ def play_card(card_id: int, context):
         return False
     _resolve_action_chain(context, card_id)
     data.last_card_id = card_id
+    if 32 in data.seen_discoveries and data.agility >= 6:
+        unlock_ability_card(context.source, 37, announce=context.announce)
+    if card_id == 47 and 30 in data.seen_discoveries:
+        unlock_ability_card(context.source, 55, announce=context.announce)
     if card_id in SLUGCAT_DISCOVERY_IDS:
         data.discovery_discount[card_id] = data.discovery_discount.get(card_id, 0) + 1
     if card_id not in SLUGCAT_ATTACK_ITEM_IDS and context.source.statuses.attack_lock:
@@ -57,7 +66,7 @@ def _resolve_action_chain(context, card_id: int) -> None:
     data = slugcat_data(context.source)
     if card_id == 6 or not data.jump_followup:
         return
-    if card_id in SLUGCAT_ATTACK_ITEM_IDS:
+    if card_id in SLUGCAT_ATTACK_ITEM_IDS or card_id in SLUGCAT_SPEAR_IDS:
         data.agility += 1
         context.announce(
             f"玩家{context.source_player_id}借小跳衔接攻击，额外获得1点敏捷"
@@ -109,13 +118,32 @@ def _attack(card_id: int, base_damage: int, on_penetrate=None):
     def effect(context):
         if not _pay_cost(context, card_id):
             return False
-        damage = _attack_with_momentum(context, base_damage)
-        context.combat.resolve_attack(
+        data = slugcat_data(context.source)
+        artisan = 56 in data.ability_unlocks
+        penetrate = on_penetrate
+        if artisan and card_id in (5, 61) and data.satiety > 0:
+            data.satiety -= 1
+            context.announce("爆炸工匠：矛视为炸矛")
+            if penetrate is None:
+                penetrate = _insert_explosive_spear
+        damage = base_damage + (
+            2 if card_id in SLUGCAT_SPEAR_IDS and 36 in data.ability_unlocks else 0
+        )
+        if card_id == 2 and artisan and data.satiety > 0:
+            data.satiety -= 1
+            damage = 10
+            context.announce("爆炸工匠：石子视为炸弹")
+        data.last_card_id = card_id
+        damage = _attack_with_momentum(context, damage)
+        life_loss = context.combat.resolve_attack(
             context,
             damage,
             SLUGCAT_SPECS_BY_ID[card_id].name,
-            on_penetrate,
+            penetrate,
         )
+        if card_id == 61 and life_loss > 0:
+            data.satiety += 1
+            context.announce("骨矛造成血量损失，饱食+1")
         return True
 
     return effect
@@ -157,11 +185,17 @@ def _queue_hand_card(context, card_id: int) -> None:
 def explosive(context):
     if not _pay_cost(context, 3):
         return False
+    data = slugcat_data(context.source)
+    artisan = 56 in data.ability_unlocks and data.satiety > 0
+    if artisan:
+        data.satiety -= 1
+        context.announce("爆炸工匠：炸药不再自伤")
     context.combat.resolve_attack(
         context, 10, SLUGCAT_SPECS_BY_ID[3].name
     )
     context.announce(f"玩家{context.source_player_id}引爆炸药")
-    context.combat.apply_damage(5, context.source_player_id, context.announce)
+    if not artisan:
+        context.combat.apply_damage(5, context.source_player_id, context.announce)
     return True
 
 
@@ -247,8 +281,13 @@ def forage(context):
     if not _pay_cost(context, 13):
         return False
     gained = math.ceil(context.source.statuses.last_dead_creature_health / 5)
-    slugcat_data(context.source).satiety += gained
+    data = slugcat_data(context.source)
+    data.satiety += gained
     context.source.statuses.last_dead_creature_health = 0
+    if gained > 0:
+        data.forage_satiety_count += 1
+        if data.forage_satiety_count >= 3:
+            unlock_ability_card(context.source, 38, announce=context.announce)
     draw_non_creatures(context.state, 1)
     context.announce(
         f"玩家{context.source_player_id}觅食，获得{gained}点饱食度并抽1张牌"
@@ -261,6 +300,13 @@ def run_away(context):
     amount = 0 if context.ignore_cost else context.source.energy
     context.source.energy = 0
     draw_count = max(0, amount - 1)
+    if data.last_run_away_round == context.state.round_number - 1:
+        data.consecutive_run_away_rounds += 1
+    else:
+        data.consecutive_run_away_rounds = 1
+    data.last_run_away_round = context.state.round_number
+    if data.consecutive_run_away_rounds >= 3:
+        unlock_ability_card(context.source, 40, announce=context.announce)
     removed = remove_all_local_hand_creatures(
         context.state, context.source_player_id
     )
@@ -330,12 +376,14 @@ def trouble(context):
 def _creature(card_id: int):
     def effect(context):
         spec = SLUGCAT_SPECS_BY_ID[card_id]
-        if spec.cost is None:
+        data = slugcat_data(context.source)
+        watcher = 40 in data.ability_unlocks
+        if not watcher and spec.cost is None:
             context.announce(f"{spec.name}不可主动打出")
             return False
-        if not _pay_cost(context, card_id):
+        if not watcher and not _pay_cost(context, card_id):
             return False
-        if card_id in (16, 18, 24):
+        if watcher or card_id in (16, 18, 24):
             creature = remove_hand_creature(
                 context.state,
                 context.source_player_id,
@@ -368,9 +416,20 @@ def _discovery(card_id: int):
         if not _pay_cost(context, card_id):
             return False
         data = slugcat_data(context.source)
+        first_growth = not data.has_grown_karma
         if card_id not in data.seen_discoveries:
             data.seen_discoveries.append(card_id)
-            data.karma_max = min(MAX_KARMA, data.karma_max + 1)
+            karma_gain = discovery_karma_gain(card_id, first_growth)
+            if karma_gain:
+                actual = min(karma_gain, MAX_KARMA - data.karma_max)
+                if actual > 0:
+                    data.karma_max += actual
+                    data.has_grown_karma = True
+                    context.announce(f"业力上限提升{actual}点")
+                if data.karma_max >= MAX_KARMA:
+                    unlock_ability_card(
+                        context.source, 39, announce=context.announce
+                    )
         context.state.draw_pile[:] = [
             item
             for item in context.state.draw_pile
@@ -555,6 +614,28 @@ def mass_battery(context):
     return True
 
 
+def karma_flower(context):
+    if not _pay_cost(context, 51):
+        return False
+    slugcat_data(context.source).karma_flower_pending = True
+    context.announce(f"玩家{context.source_player_id}使用业力花，下次复活不掉业力")
+    return True
+
+
+def transcendence(context):
+    if not _pay_cost(context, 58):
+        return False
+    data = slugcat_data(context.source)
+    if data.lock_layers >= 5:
+        data.lock_layers = 0
+        context.combat.apply_damage(99, context.target_player_id, context.announce)
+        context.announce("三重肯定达成，超度对方")
+        return True
+    data.lock_layers += 1
+    context.announce(f"超度成功，锁定层数{data.lock_layers}")
+    return True
+
+
 CARD_EFFECTS = {
     1: _attack(1, 2, _insert_steel_rod),
     2: _attack(2, 1),
@@ -573,7 +654,7 @@ CARD_EFFECTS = {
     15: trouble,
     **{card_id: _creature(card_id) for card_id in range(16, 27)},
     **{card_id: _discovery(card_id) for card_id in range(27, 36)},
-    **{card_id: _form(card_id) for card_id in range(36, 41)},
+    **{card_id: _form(card_id) for card_id in SLUGCAT_FORM_IDS},
     41: smoke_fruit,
     42: batfly_grass,
     43: flash_fruit,
@@ -582,4 +663,7 @@ CARD_EFFECTS = {
     46: white_pearl,
     47: colored_pearl,
     48: mass_battery,
+    51: karma_flower,
+    61: _attack(61, 3),
+    58: transcendence,
 }

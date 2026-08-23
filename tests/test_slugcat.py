@@ -20,11 +20,13 @@ from card_duel.cards.slugcat.creatures import (
     on_creature_death,
 )
 from card_duel.cards.slugcat.hand import effective_hand_size
+from card_duel.cards.slugcat.specs import SLUGCAT_FORM_IDS
 from card_duel.cards.slugcat.lifecycle import (
     _resolve_centipede_spread,
     resolve_pending_discards,
 )
 from card_duel.cards.slugcat.state import slugcat_data
+from card_duel.application.turns import hand_limit_for, return_card_after_use
 from card_duel.core.game import TurnEngine, TurnPhase
 from card_duel.core.models import DefenceEffect, GameState
 from card_duel.core.resources import load_character_images
@@ -38,6 +40,11 @@ class _PayForLizardChoices(AutomaticChoiceProvider):
 class _TransferFlashChoices(AutomaticChoiceProvider):
     def choose_option(self, title, prompt, options, default):
         return options[1]
+
+
+class _KillRayChoices(AutomaticChoiceProvider):
+    def choose_option(self, title, prompt, options, default):
+        return next(option for option in options if "射线虫" in option)
 
 
 class SlugcatTests(unittest.TestCase):
@@ -81,19 +88,197 @@ class SlugcatTests(unittest.TestCase):
                 13,
                 14,
                 15,
-                36,
-                37,
-                38,
-                39,
-                40,
                 42,
                 44,
                 46,
             },
         )
-        self.assertEqual(sum(counts.values()), 107)
+        self.assertEqual(sum(counts.values()), 102)
         self.assertTrue(set(counts).isdisjoint(range(16, 36)))
         self.assertTrue(set(counts).isdisjoint((49, 50)))
+        self.assertTrue(set(counts).isdisjoint(SLUGCAT_FORM_IDS))
+
+    def test_karma_growth_reaches_ten_and_unlocks_triple_affirmation(self):
+        data = slugcat_data(self.game.players[1])
+        self.game.players[1].energy = 20
+        raising_scenes = [28, 29, 30, 31, 33, 35]
+
+        self.assertTrue(self.play(raising_scenes[0]))
+        self.assertEqual(data.karma_max, 5)  # 首次触发 +2
+
+        for card_id in raising_scenes[1:]:
+            self.assertTrue(self.play(card_id))
+
+        self.assertEqual(data.karma_max, 10)
+        self.assertIn(39, data.ability_unlocks)
+        self.assertIn(39, data.discovery_pool)
+
+    def test_monk_unlocks_when_lizard_eats_noodle_and_grants_flower_on_karma_drop(self):
+        data = slugcat_data(self.game.players[1])
+        add_hand_creature(self.game, 1, 20, owner_id=1)
+        add_hand_creature(self.game, 1, 16, owner_id=1)
+
+        self._run_turn_end(DEFAULT_CHOICES)
+
+        self.assertIn(52, data.ability_unlocks)
+        self.assertIn(52, data.discovery_pool)
+        self.assertEqual(self.game.players[1].statuses.hand_creatures, [])
+        self.assertFalse(any("引来面条蝇" in message for message in self.messages))
+
+        self.game.players[1].energy = 5
+
+        self.combat.apply_damage(5, 1)
+
+        self.assertIn(51, self.game.hand_cards)
+
+        self.assertTrue(self.play(51))
+        self.assertTrue(data.karma_flower_pending)
+
+        self.combat.apply_damage(5, 1)
+        self.assertFalse(data.karma_flower_pending)
+        self.assertEqual(data.karma, 2)
+
+    def test_lizard_eats_noodle_both_disappear_without_fly(self):
+        add_hand_creature(self.game, 1, 20, owner_id=1)
+        add_hand_creature(self.game, 1, 16, owner_id=1)
+
+        self._run_turn_end(DEFAULT_CHOICES)
+
+        self.assertEqual(self.game.players[1].statuses.hand_creatures, [])
+        self.assertFalse(any("引来面条蝇" in message for message in self.messages))
+        self.assertTrue(any("一同消失" in message for message in self.messages))
+
+    def test_monk_requires_lizard_with_noodle(self):
+        data = slugcat_data(self.game.players[1])
+        add_hand_creature(self.game, 1, 16, owner_id=1)
+
+        self._run_turn_end(DEFAULT_CHOICES)
+
+        self.assertNotIn(52, data.ability_unlocks)
+
+    def test_spine_messenger_unlocks_after_colored_pearl_in_sky_islands(self):
+        data = slugcat_data(self.game.players[1])
+        data.seen_discoveries.append(30)
+        self.game.players[1].energy = 2
+
+        self.assertTrue(self.play(47))
+
+        self.assertIn(55, data.ability_unlocks)
+        self.assertIn(55, data.discovery_pool)
+
+    def test_explosion_artisan_bomb_stone_and_no_self_damage(self):
+        data = slugcat_data(self.game.players[1])
+        data.ability_unlocks.add(56)
+        data.satiety = 2
+        self.game.players[1].energy = 5
+
+        self.assertTrue(self.play(2))
+        self.assertEqual(self.game.players[2].health, 20)
+        self.assertEqual(data.satiety, 1)
+
+        self.assertTrue(self.play(3))
+        self.assertEqual(self.game.players[2].health, 10)
+        self.assertEqual(self.game.players[1].health, 5)
+        self.assertEqual(data.satiety, 0)
+
+    def test_watcher_moves_creatures_to_opponent_free(self):
+        data = slugcat_data(self.game.players[1])
+        data.ability_unlocks.add(40)
+        add_hand_creature(self.game, 1, 20, owner_id=1)
+        self.game.players[1].energy = 0
+
+        self.assertTrue(self.play(20))
+
+        self.assertEqual(self.game.players[1].statuses.hand_creatures, [])
+        self.assertEqual(
+            [item.card_id for item in self.game.players[2].statuses.hand_creatures],
+            [20],
+        )
+
+    def test_wave_dancer_returns_first_skill_to_hand(self):
+        data = slugcat_data(self.game.players[1])
+        data.ability_unlocks.add(37)
+        self.game.hand_cards[:] = [6, 8]
+
+        return_card_after_use(self.game, 1, 6, from_play=True)
+        self.assertIn(6, self.game.hand_cards)
+        self.assertTrue(data.wave_skill_returned)
+
+        return_card_after_use(self.game, 1, 8, from_play=True)
+        self.assertEqual(self.game.hand_cards.count(8), 1)
+        self.assertIn(8, self.game.discard_pile)
+
+    def test_chaos_stomach_unlocks_after_three_satiety_forages(self):
+        data = slugcat_data(self.game.players[1])
+        self.game.players[1].energy = 5
+
+        for _ in range(3):
+            self.game.players[1].statuses.last_dead_creature_health = 5
+            self.assertTrue(self.play(13))
+
+        self.assertEqual(data.forage_satiety_count, 3)
+        self.assertIn(38, data.ability_unlocks)
+        self.assertIn(38, data.discovery_pool)
+
+    def test_observer_unlocks_after_three_consecutive_run_aways(self):
+        data = slugcat_data(self.game.players[1])
+        for round_no in (1, 2, 3):
+            self.game.round_number = round_no
+            self.game.players[1].energy = 3
+            self.assertTrue(self.play(14))
+
+        self.assertEqual(data.consecutive_run_away_rounds, 3)
+        self.assertIn(40, data.ability_unlocks)
+        self.assertIn(40, self.game.hand_cards)
+
+    def test_spear_kills_with_three_types_unlock_hunter(self):
+        data = slugcat_data(self.game.players[1])
+        for spear in (4, 5, 61):
+            add_hand_creature(self.game, 2, 18, owner_id=2)
+            self.game.players[1].energy = 10
+            self.assertTrue(
+                DEFAULT_REGISTRY.play(
+                    state=self.game,
+                    character_id=4,
+                    card_id=spear,
+                    source_player_id=1,
+                    target_player_id=2,
+                    announce=self.messages.append,
+                    combat=self.combat,
+                    choices=_KillRayChoices(),
+                )
+            )
+
+        self.assertEqual(data.spear_kill_types, {4, 5, 61})
+        self.assertIn(36, data.ability_unlocks)
+        self.assertIn(36, data.discovery_pool)
+        self.assertEqual(data.hunter_spear_bonus, 2)
+        self.assertEqual(data.hunter_hand_bonus, 1)
+
+    def test_five_scavenger_kills_unlock_explosion_artisan(self):
+        data = slugcat_data(self.game.players[1])
+        data.scavenger_kills = 4
+        data.last_card_id = 2
+        add_hand_creature(self.game, 2, 25, owner_id=2)
+        context = SimpleNamespace(
+            state=self.game,
+            source_player_id=1,
+            target_player_id=2,
+            announce=self.messages.append,
+            private_announce=self.messages.append,
+        )
+
+        self.assertTrue(damage_creature(context, 2, 25, 5, threat=False))
+
+        self.assertEqual(data.scavenger_kills, 5)
+        self.assertIn(56, data.ability_unlocks)
+        self.assertIn(56, data.discovery_pool)
+
+    def test_hunter_hand_bonus_raises_hand_limit(self):
+        self.assertEqual(hand_limit_for(self.game, 1), 4)
+        slugcat_data(self.game.players[1]).hunter_hand_bonus = 1
+        self.assertEqual(hand_limit_for(self.game, 1), 5)
+        self.assertEqual(hand_limit_for(self.game, 2), 4)
 
     def test_attack_converts_all_momentum_into_damage(self):
         slugcat_data(self.game.players[1]).momentum = 4
@@ -137,7 +322,7 @@ class SlugcatTests(unittest.TestCase):
 
         self.assertTrue(self.play(27))
 
-        self.assertEqual(slugcat_data(self.game.players[1]).karma_max, 4)
+        self.assertEqual(slugcat_data(self.game.players[1]).karma_max, 3)
         self.assertIn(27, slugcat_data(self.game.players[1]).seen_discoveries)
         self.assertEqual(len(self.game.draw_pile), 8)
         self.assertEqual(
@@ -173,8 +358,8 @@ class SlugcatTests(unittest.TestCase):
     def test_missing_art_pack_uses_registered_placeholder_cards(self):
         images, max_card_id = load_character_images(4, DEFAULT_REGISTRY)
 
-        self.assertEqual(max_card_id, 50)
-        self.assertEqual(len(images), 51)
+        self.assertEqual(max_card_id, 61)
+        self.assertEqual(len(images), 62)
         self.assertTrue(all(images))
 
     def test_direct_life_loss_ignores_agility_but_consumes_it(self):

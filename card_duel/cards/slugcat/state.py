@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 from card_duel.cards.slugcat.specs import SLUGCAT_CARD_SPECS
 
-MAX_KARMA = 5
+MAX_KARMA = 10
 SLUGCAT_HEALTH = 5
 
 
@@ -33,6 +33,23 @@ class SlugcatData:
     last_centipede_round: int = -1
     pearls_given: int = 0
     scavengers_killed: int = 0
+    scavenger_kills: int = 0
+    ability_unlocks: set[int] = field(default_factory=set)
+    karma_flower_pending: bool = False
+    hunter_spear_bonus: int = 0
+    hunter_hand_bonus: int = 0
+    wave_skill_returned: bool = False
+    chaotic_last_energy: int = 0
+    forage_satiety_count: int = 0
+    consecutive_run_away_rounds: int = 0
+    last_run_away_round: int = -1
+    last_damage_round: int = -1
+    last_damage_amount: int = 0
+    lock_layers: int = 0
+    has_grown_karma: bool = False
+    spear_kill_types: set[int] = field(default_factory=set)
+    maze_agility_reached: bool = False
+    sky_colored_pearl_played: bool = False
 
 
 def slugcat_data(player) -> SlugcatData:

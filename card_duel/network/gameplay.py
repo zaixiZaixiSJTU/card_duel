@@ -4,10 +4,10 @@ from contextlib import suppress
 
 import FreeSimpleGUI as sg
 
-from card_duel.application.turns import HAND_LIMIT
 from card_duel.application.turns import can_discard as _can_discard
 from card_duel.application.turns import draw_turn_cards as _draw_turn_cards
 from card_duel.application.turns import effective_hand_size as _effective_hand_size
+from card_duel.application.turns import hand_limit_for as _hand_limit_for
 from card_duel.application.turns import remove_played_card as _remove_played_card
 from card_duel.application.turns import return_card_after_use as _return_card_after_use
 from card_duel.core.game import TurnEngine, TurnPhase
@@ -185,7 +185,9 @@ def _run_card_play_phase(session, player_id, opponent_id, announce, choices):
             clear_armed_card(session)
             animate_card_action(session, hand_index, "play")
             if not definition.exhausted:
-                _return_card_after_use(game_state, player_id, card_id)
+                _return_card_after_use(
+                    game_state, player_id, card_id, from_play=True
+                )
             _remove_played_card(game_state, hand_index, card_id)
             refresh_cards(game_state, window, session.card_images)
             with suppress(ValueError):
@@ -202,7 +204,8 @@ def _run_discard_phase(session, announce):
     announce(" [弃牌阶段]")
 
     player_id = game_state.local_player_id
-    excess_cards = max(0, _effective_hand_size(game_state, player_id) - HAND_LIMIT)
+    hand_limit = _hand_limit_for(game_state, player_id)
+    excess_cards = max(0, _effective_hand_size(game_state, player_id) - hand_limit)
     announce(f"需要弃牌:{excess_cards}" if excess_cards else "无需弃牌")
 
     while game_state.hand_size > 0:
@@ -217,7 +220,7 @@ def _run_discard_phase(session, announce):
         receive_pending_chat(session)
         if (
             event == "-btn1-"
-            and _effective_hand_size(game_state, player_id) <= HAND_LIMIT
+            and _effective_hand_size(game_state, player_id) <= hand_limit
         ):
             return True
         routed = route_hand_card_event(session, event)

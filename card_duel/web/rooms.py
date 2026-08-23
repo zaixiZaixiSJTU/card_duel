@@ -11,7 +11,11 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from card_duel.application.combat import CombatEngine
-from card_duel.application.turns import HAND_LIMIT, can_discard, effective_hand_size
+from card_duel.application.turns import (
+    can_discard,
+    effective_hand_size,
+    hand_limit_for,
+)
 from card_duel.cards.catalog import DEFAULT_REGISTRY
 from card_duel.cards.registry import CardRegistry
 from card_duel.core.models import CharacterState, GameState
@@ -696,6 +700,9 @@ class RoomManager:
                     "cost": definition.cost,
                     "description": definition.description,
                     "exhausted": definition.exhausted,
+                    "unlock_condition": self.registry_ability_condition(
+                        character_id, definition.card_id
+                    ),
                 }
                 for definition in self.registry.get_catalog(character_id)
             ]
@@ -721,7 +728,7 @@ class RoomManager:
             "active_player_id": state.active_player_id,
             "current_phase": state.current_phase,
             "game_over": state.game_over,
-            "hand_limit": HAND_LIMIT,
+            "hand_limit": hand_limit_for(state, player_id),
             "pending_choice": room.pending_action is not None,
             "you": {
                 "hand_cards": list(own_zone.hand),
@@ -758,6 +765,12 @@ class RoomManager:
         return [
             self.registry.get_card(character_id, card_id).cost for card_id in hand
         ]
+
+    def registry_ability_condition(self, character_id: int, card_id: int) -> str | None:
+        if character_id != 4:
+            return None
+        from card_duel.cards.slugcat.specs import ABILITY_UNLOCK_CONDITIONS
+        return ABILITY_UNLOCK_CONDITIONS.get(card_id)
 
     async def _deliver(self, deliveries: list[Delivery]) -> None:
         for connection, payload in deliveries:
@@ -812,4 +825,8 @@ def _json_value(value: object) -> object:
         return {str(key): _json_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        # Sets are not JSON serializable; game data (e.g. SlugcatData.ability_unlocks)
+        # uses them internally, so normalize them to arrays at the protocol boundary.
+        return [_json_value(item) for item in sorted(value, key=str)]
     return value

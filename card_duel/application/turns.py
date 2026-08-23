@@ -74,8 +74,13 @@ def remove_played_card(game_state, original_index: int, card_id: int) -> None:
         game_state.hand_cards.remove(card_id)
 
 
-def return_card_after_use(game_state, player_id: int, card_id: int) -> None:
-    from card_duel.cards.slugcat.specs import SLUGCAT_DISCOVERY_IDS
+def return_card_after_use(
+    game_state, player_id: int, card_id: int, *, from_play: bool = False
+) -> None:
+    from card_duel.cards.slugcat.specs import (
+        SLUGCAT_DISCOVERY_IDS,
+        SLUGCAT_SPECS_BY_ID,
+    )
     from card_duel.cards.slugcat.state import SlugcatData, slugcat_data
 
     player = game_state.players[player_id]
@@ -83,8 +88,30 @@ def return_card_after_use(game_state, player_id: int, card_id: int) -> None:
         player.character_data, SlugcatData
     ):
         slugcat_data(player).discovery_pool.append(card_id)
-    else:
-        game_state.discard_pile.append(card_id)
+        return
+    if from_play and isinstance(player.character_data, SlugcatData):
+        data = slugcat_data(player)
+        spec = SLUGCAT_SPECS_BY_ID.get(card_id)
+        if (
+            spec is not None
+            and spec.card_type == "技能"
+            and 37 in data.ability_unlocks
+            and not data.wave_skill_returned
+        ):
+            # 波浪舞者：每回合第一张技能牌回到手牌。
+            data.wave_skill_returned = True
+            game_state.hand_cards.append(card_id)
+            return
+    game_state.discard_pile.append(card_id)
+
+
+def hand_limit_for(game_state, player_id: int) -> int:
+    """Rule-aware hand limit (hunter form adds +1 to the slugcat limit)."""
+    if game_state.character_ids.get(player_id) == 4:
+        data = getattr(game_state.players[player_id], "character_data", None)
+        bonus = getattr(data, "hunter_hand_bonus", 0) or 0
+        return HAND_LIMIT + bonus
+    return HAND_LIMIT
 
 
 def effective_hand_size(

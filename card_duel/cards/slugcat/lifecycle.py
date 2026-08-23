@@ -12,12 +12,14 @@ from card_duel.cards.slugcat.creatures import (
     remove_hand_creature,
     resolve_attack,
 )
+from card_duel.cards.slugcat.abilities import unlock_ability_card
 from card_duel.cards.slugcat.hand import count_card
 from card_duel.cards.slugcat.specs import (
     LIZARD_IDS,
     SLUGCAT_NO_DISCARD_IDS,
     SLUGCAT_SPECS_BY_ID,
 )
+from card_duel.core.rules import add_card_to_hand
 from card_duel.cards.slugcat.state import SLUGCAT_HEALTH, SlugcatData, slugcat_data
 from card_duel.core.game import TurnPhase
 
@@ -38,11 +40,33 @@ class SlugcatRules:
                 data.momentum = 0
                 data.redirect_creatures_to_opponent = False
                 data.discovery_discount.clear()
+                if 38 in data.ability_unlocks:
+                    previous_energy = max(0, data.chaotic_last_energy)
+                    data.momentum += previous_energy * 2
+                    if (
+                        context.game_state.hand_cards
+                        and context.game_state.draw_pile
+                    ):
+                        context.game_state.hand_cards.pop()
+                        add_card_to_hand(context.game_state, context.game_state.draw_pile.pop(0))
+                        context.announce("混沌胃袋：弃1抽1，并获得动能")
+                    else:
+                        context.announce("混沌胃袋：获得动能（无牌可弃/抽）")
+                data.chaotic_last_energy = player.energy
+                if 55 in data.ability_unlocks:
+                    add_card_to_hand(context.game_state, 61)
+                    context.announce("棘刺信使提供一张骨矛")
+                if 39 in data.ability_unlocks:
+                    for _ in range(data.lock_layers + 1):
+                        add_card_to_hand(context.game_state, 58)
+                    context.announce("三重肯定提供超度")
                 grass_count = count_card(context.game_state, 42)
                 if grass_count:
                     data.satiety += grass_count * 2
                     context.announce(f"蝠蝇草提供{grass_count * 2}点饱食度")
             player.statuses.noodle_fly_immunity_used = False
+            if isinstance(player.character_data, SlugcatData) and 37 in slugcat_data(player).ability_unlocks:
+                slugcat_data(player).wave_skill_returned = False
             _apply_electric_penalty(player, context.player_id, context.announce)
 
         def on_turn_end(context):
@@ -79,6 +103,12 @@ class SlugcatRules:
     def modify_incoming_damage(self, state, player_id, amount, announce=None):
         if amount <= 0:
             return amount
+        character_data = state.players[player_id].character_data
+        if isinstance(character_data, SlugcatData):
+            if 39 in character_data.ability_unlocks and character_data.lock_layers > 0:
+                character_data.lock_layers -= 1
+                if announce:
+                    announce(f"玩家{player_id}受伤，三重肯定锁定层数-1")
         statuses = state.players[player_id].statuses
         # 自己一侧（手牌/威胁区）有几张红边体节就免伤几次，双方各自算。
         creature = next(
@@ -115,6 +145,17 @@ class SlugcatRules:
         player = state.players[player_id]
         data = slugcat_data(player)
         data.karma = max(0, data.karma - 1)
+        if data.karma_flower_pending:
+            data.karma_flower_pending = False
+            data.karma = min(data.karma_max, data.karma + 1)
+            announce and announce(f"业力花保护了玩家{player_id}，业力不掉")
+        else:
+            if 52 in data.ability_unlocks:
+                if player_id == state.local_player_id:
+                    add_card_to_hand(state, 51)
+                else:
+                    player.statuses.pending_hand_additions.append(51)
+                announce and announce(f"僧侣：业力下降，获得1张业力花")
         if data.karma > 0:
             player.health = player.max_health
             if announce:
@@ -130,6 +171,14 @@ class SlugcatRules:
     def format_status(self, player) -> str:
         data = slugcat_data(player)
         return f"业力 {data.karma}/{data.karma_max}  ·  饱食 {data.satiety}"
+
+    def unlock_ability(self, player, card_id: int) -> bool:
+        from card_duel.cards.slugcat.abilities import unlock_ability_card
+        return unlock_ability_card(player, card_id)
+
+    def _maybe_unlock(self, player, card_id: int, announce=None):
+        from card_duel.cards.slugcat.abilities import unlock_ability_card
+        unlock_ability_card(player, card_id, announce=announce)
 
 
 def resolve_pending_discards(
@@ -214,18 +263,25 @@ def _resolve_creatures(context, combat) -> None:
     # 面条蝇、射线虫引来的秃鹫等）不参与本次结算，留到下个回合结束才出伤。
     damage_creatures = list(statuses.hand_creatures) + list(statuses.creature_threats)
 
-    if any(item.card_id in LIZARD_IDS for item in all_creatures):
-        for noodle in [item for item in statuses.hand_creatures if item.card_id == 16]:
-            remove_hand_creature(state, player_id, 16)
-            on_creature_death(
-                state,
-                player_id,
-                noodle,
-                context.announce,
-                private_announce=context.private_announce,
-            )
-            context.announce("蜥蜴吃掉了小面条，引来面条蝇")
+    # 手牌中的蜥蜴会吃掉小面条：二者一同消失、不触发死亡效果（无面条蝇），
+    # 并解锁僧侣形态（形态卡加入见闻牌堆）。
+    for lizard in [
+        item for item in statuses.hand_creatures if item.card_id in LIZARD_IDS
+    ]:
+        noodle = next(
+            (item for item in statuses.hand_creatures if item.card_id == 16),
+            None,
+        )
+        if noodle is None:
+            break
+        statuses.hand_creatures.remove(lizard)
+        statuses.hand_creatures.remove(noodle)
+        context.announce("蜥蜴吃掉了小面条，二者一同消失")
+        unlock_ability_card(
+            state.players[player_id], 52, announce=context.announce
+        )
 
+    # 没有蜥蜴在场的小面条照常死亡：引来一张面条蝇。
     for noodle in [item for item in statuses.hand_creatures if item.card_id == 16]:
         remove_hand_creature(state, player_id, 16)
         on_creature_death(

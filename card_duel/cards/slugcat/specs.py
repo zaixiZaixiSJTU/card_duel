@@ -156,11 +156,21 @@ SLUGCAT_CARD_SPECS = (
     SlugcatCardSpec(
         35, "沉没巨构", "见闻", 0, 2, "加入钢秃鹫、质量稀释电池和有色珍珠。"
     ),
-    SlugcatCardSpec(36, "猎手", "形态", 1, 0, "切换为猎手形态。", True),
-    SlugcatCardSpec(37, "波浪舞者", "形态", 1, 0, "切换为波浪舞者形态。", True),
-    SlugcatCardSpec(38, "混沌胃袋", "形态", 1, 0, "切换为混沌胃袋形态。", True),
-    SlugcatCardSpec(39, "三 重 肯 定", "形态", 1, 0, "切换为三重肯定形态。", True),
-    SlugcatCardSpec(40, "涟漪编织者", "形态", 1, 0, "切换为涟漪编织者形态。", True),
+    SlugcatCardSpec(36, "猎手", "形态", 0, 4,
+                    "三种矛伤+2；手牌上限+1。"
+                    "解锁：用过三种矛杀死过生物后加入。", True),
+    SlugcatCardSpec(37, "波浪舞者", "形态", 0, 4,
+                    "每回合打出的第一张技能牌回到手牌。"
+                    "解锁：迷宫水道达到6敏捷加入。", True),
+    SlugcatCardSpec(38, "混沌胃袋", "形态", 0, 4,
+                    "每回合开始时弃1抽1；获得上回合剩余能量数×2的动能。"
+                    "解锁：3次觅食获得饱食后加入。", True),
+    SlugcatCardSpec(39, "三 重 肯 定", "形态", 0, 4,
+                    "每回合获得（锁定层数+1）张超度；受伤时锁定层数-1。"
+                    "解锁：业力上限为10时加入。", True),
+    SlugcatCardSpec(40, "观望者", "形态", 0, 4,
+                    "所有生物牌可不耗能打出，移入对方生物牌堆。"
+                    "解锁：连续三回合跑过路加入。", True),
     SlugcatCardSpec(
         41, "烟雾果", "物品", 0, 0, "免疫下一次受到的攻击；可直接击杀烈焰蜈蚣。"
     ),
@@ -193,6 +203,29 @@ SLUGCAT_CARD_SPECS = (
         "耗能1拔出电矛并恢复本回合对应的力量；电矛消耗，不返还。不可弃牌。",
         True,
     ),
+    SlugcatCardSpec(
+        51, "业力花", "物品", 0, 1, "下次复活不掉业力。", True
+    ),
+    SlugcatCardSpec(
+        52, "僧侣", "形态", 0, 4,
+        "业力下降时获得1张业力花（物品，耗能1：下次复活不掉业力）。"
+        "解锁：手牌中的蜥蜴吃掉小面条后加入。", True,
+    ),
+    SlugcatCardSpec(
+        55, "棘刺信使", "形态", 0, 4,
+        "每回合获得一张骨矛（物品，相当于矛，造成血量损失时饱食+1）。"
+        "解锁：在天空群岛打出一颗彩色珍珠后加入。", True,
+    ),
+    SlugcatCardSpec(
+        56, "爆炸工匠", "形态", 0, 4,
+        "有饱食时，矛/石子消耗1点饱食视为炸矛/炸弹，炸药不再自伤。"
+        "解锁：击杀5只拾荒者后加入。", True,
+    ),
+    SlugcatCardSpec(58, "超度", "技能", 0, 2, "锁定层数+1；层数为5时超度对方。"),
+    SlugcatCardSpec(
+        61, "骨矛", "物品", 0, 2,
+        "相当于矛，造成血量损失时饱食+1。", True
+    ),
 )
 
 SLUGCAT_SPECS_BY_ID = {spec.card_id: spec for spec in SLUGCAT_CARD_SPECS}
@@ -204,6 +237,7 @@ SLUGCAT_INITIAL_DECK_COUNTS = {
     spec.card_id: spec.source_count
     for spec in SLUGCAT_CARD_SPECS
     if spec.source_count > 0
+    and spec.card_type != "形态"
     and not 16 <= spec.card_id <= 35
     and spec.card_id not in (49, 50)
 }
@@ -211,9 +245,23 @@ SLUGCAT_INITIAL_DECK_COUNTS = {
 SLUGCAT_CREATURE_IDS = tuple(range(16, 27))
 SLUGCAT_INSERTED_IDS = (49, 50)
 SLUGCAT_DISCOVERY_IDS = tuple(range(27, 36))
-SLUGCAT_FORM_IDS = tuple(range(36, 41))
+SLUGCAT_FORM_IDS = (36, 37, 38, 39, 40, 52, 55, 56)
+SLUGCAT_SPEAR_IDS = (4, 5, 61)
 SLUGCAT_ATTACK_ITEM_IDS = (1, 2, 3, 4, 5)
 SLUGCAT_NO_DISCARD_IDS = SLUGCAT_CREATURE_IDS + SLUGCAT_INSERTED_IDS
+ABILITY_CARD_IDS = (*SLUGCAT_FORM_IDS, 51)
+NO_KARMA_DISCOVERY_IDS = (27, 32, 34)
+
+ABILITY_UNLOCK_CONDITIONS = {
+    36: "用过三种矛杀死过生物后加入",
+    37: "迷宫水道达到6敏捷加入",
+    38: "3次觅食获得饱食后加入",
+    39: "业力上限为10时加入",
+    40: "连续三回合跑过路加入",
+    52: "手牌中的蜥蜴吃掉小面条后加入",
+    55: "在天空群岛打出一颗彩色珍珠后加入",
+    56: "击杀5只拾荒者后加入",
+}
 
 CREATURE_BASE_HEALTH = {
     16: 1,
@@ -258,3 +306,10 @@ DISCOVERY_ADJACENCY = {
 FORM_NAMES = {
     card_id: SLUGCAT_SPECS_BY_ID[card_id].name for card_id in SLUGCAT_FORM_IDS
 }
+
+
+def discovery_karma_gain(card_id: int, first_growth: bool) -> int:
+    """Excluded scenes grant nothing; the first growth is +2, then +1."""
+    if card_id in NO_KARMA_DISCOVERY_IDS:
+        return 0
+    return 2 if first_growth else 1

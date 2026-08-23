@@ -36,6 +36,7 @@ type CardDefinition = {
   cost: number | null;
   description: string;
   exhausted: boolean;
+  unlock_condition?: string | null;
 };
 
 type Creature = {
@@ -110,7 +111,7 @@ type DeckViewerMode = "draw" | "discard";
 type LayoutRegion = "opponentStatus" | "ownStatus" | "piles" | "hand" | "lastPlayed" | "actionPanel" | "logPanel";
 type DiscardPress = { index: number; token: number };
 type LayoutSettings = {
-  uiScale: number;
+  cardHeight: number;
   cardWidth: number;
   chatFontSize: number;
   chatHeight: number;
@@ -121,7 +122,7 @@ type InteractionSettings = {
   playGapMs: number;
 };
 const DEFAULT_LAYOUT_SETTINGS: LayoutSettings = {
-  uiScale: 100,
+  cardHeight: 240,
   cardWidth: 145,
   chatFontSize: 13,
   chatHeight: 285,
@@ -196,7 +197,15 @@ export function GameClient() {
   useEffect(() => {
     try {
       const savedLayout = localStorage.getItem("cardDuel.layout");
-      const nextLayout = savedLayout ? { ...DEFAULT_LAYOUT_SETTINGS, ...JSON.parse(savedLayout) } : null;
+      let nextLayout = null as LayoutSettings | null;
+      if (savedLayout) {
+        const parsed = JSON.parse(savedLayout) as Partial<LayoutSettings> & { uiScale?: number };
+        nextLayout = { ...DEFAULT_LAYOUT_SETTINGS, ...parsed };
+        if (typeof parsed.cardHeight !== "number" && typeof parsed.uiScale === "number") {
+          // 旧版"整体缩放"按百分比迁移为手牌高度（240px 基准）。
+          nextLayout.cardHeight = Math.round(240 * parsed.uiScale / 100);
+        }
+      }
       const savedInteraction = localStorage.getItem("cardDuel.interaction");
       const nextInteraction = savedInteraction ? { ...DEFAULT_INTERACTION_SETTINGS, ...JSON.parse(savedInteraction) } : null;
       if (nextLayout || nextInteraction) {
@@ -628,18 +637,37 @@ function MatchScreen(props: {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deckViewer, setDeckViewer] = useState<DeckViewerMode | null>(null);
   const [previewedCard, setPreviewedCard] = useState<{ card: CardDefinition; count: number } | null>(null);
+  const [codexOpen, setCodexOpen] = useState(false);
   const [handView, setHandView] = useState<"cards" | "creatures">("cards");
+  const [viewportHeight, setViewportHeight] = useState(() =>
+    typeof window === "undefined" ? 800 : window.innerHeight,
+  );
   const pendingPlayRef = useRef<PlayTarget | null>(null);
   const [activePlayTarget, setActivePlayTarget] = useState<PlayTarget | null>(null);
   const [activeDiscardTarget, setActiveDiscardTarget] = useState<DiscardPress | null>(null);
   const canPlay = myTurn && inPlay && !match.pending_choice && !playLocked && !handRelayouting;
+  const cardEnlargeScale = Math.min(
+    1.25,
+    Math.max(
+      0.7,
+      (viewportHeight - 130) / props.layout.cardHeight,
+    ),
+  );
   const styleVariables = {
-    "--ui-scale": String(props.layout.uiScale / 100),
+    "--ui-scale": String(props.layout.cardHeight / 240),
+    "--card-height": `${props.layout.cardHeight}px`,
     "--card-width": `${props.layout.cardWidth}px`,
     "--chat-font-size": `${props.layout.chatFontSize}px`,
     "--chat-height": `${props.layout.chatHeight}px`,
     "--side-column": `${props.layout.sideColumnWidth}px`,
+    "--enlarge-scale": String(cardEnlargeScale),
   } as React.CSSProperties;
+
+  useEffect(() => {
+    const measure = () => setViewportHeight(window.innerHeight);
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
 
   useEffect(() => () => {
     if (playTimerRef.current !== null) window.clearTimeout(playTimerRef.current);
@@ -847,10 +875,11 @@ function MatchScreen(props: {
     ? match.you.draw_pile ?? []
     : match.you.discard_pile ?? [];
   const unlockedCreatures = me.statuses.unlocked_creature_counts ?? {};
+  const safeUnlockedCreatures = unlockedCreatures && typeof unlockedCreatures === "object" ? unlockedCreatures : {};
   const groupedViewerCards = Object.entries(
     [
       ...deckViewerCards,
-      ...(deckViewer === "draw" ? Object.entries(unlockedCreatures).flatMap(([cardId, count]) => Array.from({ length: Number(count) }, () => Number(cardId))) : []),
+      ...(deckViewer === "draw" ? Object.entries(safeUnlockedCreatures).flatMap(([cardId, count]) => Array.from({ length: Number(count) }, () => Number(cardId))) : []),
     ].reduce<Record<string, Array<{ card: CardDefinition; count: number }>>>((groups, cardId) => {
       const card = getCard(myCharacter, cardId);
       if (!card) return groups;
@@ -858,6 +887,13 @@ function MatchScreen(props: {
       const existing = groups[card.card_type].find((item) => item.card.card_id === card.card_id);
       if (existing) existing.count += 1;
       else groups[card.card_type].push({ card, count: 1 });
+      return groups;
+    }, {}),
+  );
+  const codexGroups = Object.entries(
+    (catalogs[String(myCharacter)] ?? []).reduce<Record<string, CardDefinition[]>>((groups, card) => {
+      if (card.card_id === 0) return groups;
+      (groups[card.card_type] ??= []).push(card);
       return groups;
     }, {}),
   );
@@ -873,7 +909,7 @@ function MatchScreen(props: {
       <section className="battlefield">
         <div className="creature-lane opponent-creatures">{opponent.statuses.hand_creatures.map((creature, index) => <CreatureChip key={`${creature.card_id}-${index}`} creature={creature} card={getCard(opponentCharacter, creature.card_id)} />)}</div>
         <div className="layout-region last-played-frame" data-region="lastPlayed" style={{ transform: `translate(${regionOffsets.lastPlayed.x}px, ${regionOffsets.lastPlayed.y}px)` }} onPointerDown={(event) => startRegionDrag(event, "lastPlayed")}>
-          {lastCard && props.lastPlayed ? <MiniCard card={lastCard} cost={lastCard.cost} characterId={props.lastPlayed.character_id} /> : <div className="empty-played"><span>LAST PLAYED</span><b>等待出牌</b></div>}
+          {lastCard && props.lastPlayed ? <GameCard card={lastCard} characterId={props.lastPlayed.character_id} cardId={lastCard.card_id} cost={lastCard.cost} index={lastCard.card_id - 1} discardState="none" /> : <div className="empty-played"><span>LAST PLAYED</span><b>等待出牌</b></div>}
         </div>
         <AnimatePresence mode="wait">
           <motion.div 
@@ -1009,6 +1045,7 @@ function MatchScreen(props: {
           <button type="button" className="turn-end" disabled={!myTurn || match.pending_choice || (!inPlay && !inDiscard) || excessCards > 0} onClick={() => { setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: false, indexes: [] }); props.send("end_turn"); }}>{excessCards > 0 ? `还需弃 ${excessCards} 张` : "结束回合"} <b>→</b></button>
         </div>
         <div className="interface-actions">
+          <button type="button" className="icon-button" aria-label="打开牌图鉴" title="牌图鉴" onClick={() => setCodexOpen(true)}>📖</button>
           <button type="button" className="icon-button layout-reset" aria-label="复位界面布局" title="复位界面布局" onClick={resetRegionOffsets}>⟲</button>
           <button type="button" className="icon-button settings-toggle" aria-label="打开界面设置" title="界面设置" onClick={() => setSettingsOpen(true)}>⚙</button>
         </div>
@@ -1028,11 +1065,11 @@ function MatchScreen(props: {
         />
       )}
       {deckViewer && (
-        <div className="modal-backdrop">
-          <section className="choice-dialog deck-viewer" role="dialog" aria-modal="true" aria-labelledby="deck-viewer-title">
+        <div className="modal-backdrop" onClick={() => setDeckViewer(null)} role="presentation">
+          <section className="choice-dialog deck-viewer" role="dialog" aria-modal="true" aria-labelledby="deck-viewer-title" onClick={(event) => event.stopPropagation()}>
             <p className="eyebrow">DECK VIEW</p>
             <h2 id="deck-viewer-title">{deckViewer === "draw" ? "抽牌堆" : "弃牌堆"}</h2>
-            <p>{deckViewer === "draw" ? "按卡牌类型分组显示当前抽牌堆。" : "按卡牌类型分组显示当前弃牌堆。"}</p>
+            <p>{deckViewer === "draw" ? "按卡牌类型分组显示当前抽牌堆。" : "按卡牌类型分组显示当前弃牌堆。"} 共 {groupedViewerCards.reduce((total, [, cards]) => total + cards.reduce((sum, item) => sum + item.count, 0), 0)} 张 · {groupedViewerCards.length} 类。</p>
             {groupedViewerCards.length === 0 ? (
               <p className="muted">当前牌堆为空。</p>
             ) : (
@@ -1058,16 +1095,44 @@ function MatchScreen(props: {
                 </section>
               ))
             )}
-            <footer><button type="button" onClick={() => setDeckViewer(null)}>关闭</button></footer>
           </section>
         </div>
       )}
       {previewedCard && (
         <div className="modal-backdrop card-preview-backdrop" onClick={() => setPreviewedCard(null)} role="presentation">
           <div className="card-preview" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} role="presentation">
-            <GameCard card={previewedCard.card} characterId={myCharacter} cardId={previewedCard.card.card_id} cost={previewedCard.card.cost} index={previewedCard.count - 1} discardState="none" stackCount={previewedCard.count > 1 ? previewedCard.count : undefined} />
-            <button type="button" onClick={() => setPreviewedCard(null)}>关闭预览</button>
+            <div className="card-preview-card">
+              <GameCard card={previewedCard.card} characterId={myCharacter} cardId={previewedCard.card.card_id} cost={previewedCard.card.cost} index={previewedCard.card.card_id - 1} discardState="none" />
+            </div>
+            <button type="button" className="card-preview-close" onClick={() => setPreviewedCard(null)}>关闭预览</button>
           </div>
+        </div>
+      )}
+      {codexOpen && (
+        <div className="modal-backdrop" onClick={() => setCodexOpen(false)} role="presentation">
+          <section className="choice-dialog deck-viewer codex-viewer" role="dialog" aria-modal="true" aria-labelledby="codex-title" onClick={(event) => event.stopPropagation()}>
+            <p className="eyebrow">CARD CODEX</p>
+            <h2 id="codex-title">牌图鉴</h2>
+            <p>按分类查看当前角色的全部卡牌与能力解锁条件。</p>
+            {codexGroups.map(([type, cards]) => (
+              <section key={type} className="deck-group">
+                <h3>{type} · {cards.length}</h3>
+                <div className="deck-grid">
+                  {cards.map((card) => (
+                    <button
+                      key={card.card_id}
+                      type="button"
+                      className="deck-card-button"
+                      title="右键查看放大卡面"
+                      onContextMenu={(event) => { event.preventDefault(); setPreviewedCard({ card, count: 1 }); }}
+                    >
+                      <GameCard card={card} characterId={myCharacter} cardId={card.card_id} cost={card.cost} index={card.card_id - 1} discardState="none" />
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </section>
         </div>
       )}
     </main>
@@ -1142,6 +1207,7 @@ function GameCard({ card, characterId = 1, cardId, cost, index, discardState, cr
         <GameTooltip focusable={false} className="card-cost-tooltip" explanation={cardCostExplanation(cost, card?.cost)}><b>{cost ?? "—"}</b></GameTooltip>
       </div>
     </div>
+    {typeof card?.unlock_condition === "string" && <span className="unlock-condition">解锁：{card.unlock_condition}</span>}
     {image ? <Image className="card-art-image" src={image} alt="" width={320} height={220} /> : <div className="card-art"><span>{card?.name?.slice(0, 1) ?? "?"}</span></div>}
     {typeof creatureHealth === "number" && <span className="creature-health-badge">♥ {creatureHealth}{creatureShell === false ? " · 破甲" : ""}</span>}
     <div className="card-copy"><strong>{card?.name ?? `卡牌 ${cardId}`}</strong><p><RuleText text={card?.description || "暂无卡牌说明"} /></p></div>
@@ -1149,17 +1215,6 @@ function GameCard({ card, characterId = 1, cardId, cost, index, discardState, cr
     <small>#{String(index + 1).padStart(2, "0")} · ID {cardId}</small>
     {discardState !== "none" && <em>{discardState === "selected" ? "− 退回" : discardState === "blocked" ? "不可弃置" : "+ 选择弃置"}</em>}
   </article>;
-}
-
-function MiniCard({ card, cost, characterId }: { card: CardDefinition; cost: number | null; characterId: number }) {
-  const image = cardImage(characterId, card.card_id);
-  return <div className={`mini-card ${cardTone(card.card_type)}`}>
-    <GameTooltip focusable={false} className="mini-card-cost" explanation={cardCostExplanation(cost, card.cost)}><b>{cost ?? "—"}</b></GameTooltip>
-    {image ? <Image className="card-art-image" src={image} alt="" width={240} height={160} /> : <div className="card-art"><span>{card.name.slice(0, 1)}</span></div>}
-    <GameTooltip focusable={false} explanation={cardTypeExplanation(card.card_type)}><span>{card.card_type}</span></GameTooltip>
-    <strong>{card.name}</strong>
-    <p>{card.description || "暂无卡牌说明"}</p>
-  </div>;
 }
 
 function CreatureChip({ creature, card }: { creature: Creature; card?: CardDefinition }) {
@@ -1188,7 +1243,7 @@ function SettingsDialog({ layout, interaction, onChangeLayout, onChangeInteracti
       <p className="eyebrow">INTERFACE</p>
       <h2 id="layout-settings-title">界面与出牌设置</h2>
       <div className="settings-grid">
-        {[["uiScale", "整体缩放", 80, 140], ["cardWidth", "手牌宽度", 120, 220], ["chatFontSize", "聊天字号", 11, 20], ["chatHeight", "聊天高度", 200, 460], ["sideColumnWidth", "侧栏宽度", 260, 480]].map(([key, label, minimum, maximum]) => (
+        {[["cardHeight", "手牌高度", 170, 340], ["cardWidth", "手牌宽度", 120, 220], ["chatFontSize", "聊天字号", 11, 20], ["chatHeight", "聊天高度", 200, 460], ["sideColumnWidth", "侧栏宽度", 260, 480]].map(([key, label, minimum, maximum]) => (
           <label key={key as string}>
             <span>{label as string}<b>{layout[key as keyof LayoutSettings]}</b></span>
             <input type="range" min={minimum as number} max={maximum as number} value={layout[key as keyof LayoutSettings]} onChange={(event) => onChangeLayout({ [key as keyof LayoutSettings]: Number(event.target.value) } as Partial<LayoutSettings>)} />

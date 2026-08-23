@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from card_duel.cards.slugcat.specs import (
     CREATURE_BASE_HEALTH,
     SLUGCAT_CHARACTER_ID,
+    SLUGCAT_SPEAR_IDS,
     SLUGCAT_SPECS_BY_ID,
 )
 from card_duel.cards.slugcat.state import SlugcatData
@@ -317,6 +318,7 @@ def damage_creature(
         if centipede_health(context.state) > 0:
             return False
         zone.remove(creature)
+        _track_attacker_kills(context, card_id)
         _kill_centipede(context, player_id, creature)
         return True
 
@@ -332,6 +334,7 @@ def damage_creature(
         return False
 
     zone.remove(creature)
+    _track_attacker_kills(context, card_id)
     if not threat and state_has_physical_creature(context.state, player_id):
         _remove_physical_or_queue(context.state, player_id, card_id)
     on_creature_death(
@@ -342,6 +345,24 @@ def damage_creature(
         private_announce=context.private_announce,
     )
     return True
+
+
+def _track_attacker_kills(context, card_id: int) -> None:
+    """Record spear/scavenger kills on the attacker for form unlocks."""
+    attacker = context.state.players[context.source_player_id]
+    data = attacker.character_data
+    if not isinstance(data, SlugcatData):
+        return
+    from card_duel.cards.slugcat.abilities import unlock_ability_card
+
+    if data.last_card_id in SLUGCAT_SPEAR_IDS:
+        data.spear_kill_types.add(data.last_card_id)
+        if len(data.spear_kill_types) >= 3:
+            unlock_ability_card(attacker, 36, announce=context.announce)
+    if card_id == 25:
+        data.scavenger_kills += 1
+        if data.scavenger_kills >= 5:
+            unlock_ability_card(attacker, 56, announce=context.announce)
 
 
 def _kill_centipede(context, player_id: int, creature: CreatureState) -> None:
@@ -499,6 +520,7 @@ def kill_matching_creature(context, card_id: int) -> bool:
     )
     creature = next(item for item in zone if item.card_id == card_id)
     zone.remove(creature)
+    _track_attacker_kills(context, card_id)
     if card_id == 22:
         _remove_all_centipede_segments(context.state)
         if context.announce:

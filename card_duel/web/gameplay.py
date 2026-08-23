@@ -10,10 +10,10 @@ from typing import Any, Protocol
 
 from card_duel.application.combat import CombatEngine
 from card_duel.application.turns import (
-    HAND_LIMIT,
     can_discard,
     draw_turn_cards,
     effective_hand_size,
+    hand_limit_for,
     remove_played_card,
     return_card_after_use,
 )
@@ -258,7 +258,7 @@ def play_card(
         )
         if played:
             if not definition.exhausted:
-                return_card_after_use(state, player_id, card_id)
+                return_card_after_use(state, player_id, card_id, from_play=True)
             remove_played_card(state, index, card_id)
     else:
         raise ActionError("invalid_card", "source 必须是 hand 或 creature")
@@ -325,15 +325,16 @@ def end_turn(
     state, combat = _require_active(room, player_id)
     if state.current_phase not in {TurnPhase.PLAY.value, TurnPhase.DISCARD.value}:
         raise ActionError("wrong_phase", "当前不能结束回合")
-    if effective_hand_size(state, player_id) > HAND_LIMIT:
+    hand_limit = hand_limit_for(state, player_id)
+    if effective_hand_size(state, player_id) > hand_limit:
         raise ActionError(
             "hand_limit",
-            f"手牌超过上限，仍需弃 {effective_hand_size(state, player_id) - HAND_LIMIT} 张",
+            f"手牌超过上限，仍需弃 {effective_hand_size(state, player_id) - hand_limit} 张",
         )
 
     log = ActionLog(private_player_id=player_id)
     turn = _build_turn(room, player_id, registry, log, choices=choices)
-    if effective_hand_size(state, player_id) > HAND_LIMIT:
+    if effective_hand_size(state, player_id) > hand_limit:
         state.current_phase = TurnPhase.DISCARD.value
         turn.resume_after(TurnPhase.PLAY)
         turn.enter_phase(TurnPhase.DISCARD)
