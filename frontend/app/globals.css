@@ -389,6 +389,11 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .layout-reset { color: #fff; border: 1px solid rgba(255,255,255,.2); background: rgba(0,0,0,.8); }
 .log-actions button.layout-reset:hover:not(:disabled) { transform: translateY(-4px); border-color: #fff; color: #fff; background: rgba(255,255,255,.1); }
 .log-actions button:disabled { cursor: not-allowed; opacity: .3; transform: none !important; box-shadow: none !important; filter: grayscale(1); }
+.interface-actions { position: fixed; top: 18px; right: 24px; display: flex; align-items: center; gap: 8px; z-index: 60; }
+.icon-button { width: 42px; height: 42px; display: grid; place-items: center; color: var(--ink); border: 1px solid rgba(255,255,255,.16); border-radius: 50%; background: rgba(12,16,12,.82); backdrop-filter: blur(8px); font-size: 20px; line-height: 1; cursor: pointer; transition: all .2s; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+.icon-button:hover { transform: translateY(-2px); border-color: var(--acid); color: var(--acid); background: rgba(215,255,63,.08); box-shadow: 0 10px 28px rgba(0,0,0,.6); }
+.layout-reset { border-color: rgba(255,255,255,.16) !important; background: rgba(12,16,12,.82) !important; color: var(--ink) !important; padding: 0 !important; min-width: 0 !important; font-size: 20px !important; }
+.interface-actions .icon-button.layout-reset:hover { color: var(--acid) !important; border-color: var(--acid) !important; background: rgba(215,255,63,.08) !important; }
 .layout-region { will-change: transform; }
 .layout-region[data-region="opponentStatus"], .layout-region[data-region="ownStatus"], .layout-region[data-region="piles"], .layout-region[data-region="hand"], .layout-region[data-region="lastPlayed"], .layout-region[data-region="actionPanel"], .layout-region[data-region="logPanel"] { cursor: grab; touch-action: none; }
 .layout-region:active { cursor: grabbing; }
@@ -406,6 +411,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .hand-cards { display: flex; align-items: flex-end; justify-content: center; height: 300px; padding: 0; pointer-events: auto; perspective: 1000px; position: relative; width: 100%; }
 .hand-card-button { width: var(--card-width); position: absolute; bottom: 0; left: 50%; margin-left: calc(var(--card-width) / -2); padding: 0; border: 0; background: none; cursor: pointer; transform-origin: bottom center; filter: drop-shadow(0 10px 20px rgba(0,0,0,0.5)); }
 .hand-card-button:hover:not(:disabled) { filter: drop-shadow(0 30px 60px rgba(0,0,0,0.8)); }
+.hand-card-button.press-selected { z-index: 60; outline: 5px solid var(--acid); outline-offset: 2px; border-radius: 9px; filter: brightness(1.12) drop-shadow(0 28px 60px rgba(215,255,63,.25)); }
 .hand-cards.selecting-discard .hand-card-button.press-selected { outline-color: #ff5533; }
 .hand-card-button:disabled { opacity: 0.6; filter: grayscale(0.5); }
 .hand-cards.selecting-discard .hand-card-button:not(:disabled) { opacity: .88; }

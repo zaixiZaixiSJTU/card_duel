@@ -303,12 +303,15 @@ def _discard_indexes(
     ):
         raise ActionError("card_not_discardable", "生物牌和插入物不可弃置")
 
-    state.current_phase = TurnPhase.DISCARD.value
+    original_phase = state.current_phase
     discarded_card_ids = [state.hand_cards[index] for index in indexes]
     for index in sorted(indexes, reverse=True):
         state.hand_cards.pop(index)
     for card_id in discarded_card_ids:
         return_card_after_use(state, player_id, card_id)
+    # Flexible discard is an out-of-phase action: it must not move the turn
+    # into the mandatory discard phase. End turn still validates hand limits.
+    state.current_phase = original_phase
     _sync_zone(room, player_id)
     return ActionLog(announcements=[f"玩家{player_id}弃掉{len(indexes)}张牌"])
 
@@ -330,12 +333,16 @@ def end_turn(
 
     log = ActionLog(private_player_id=player_id)
     turn = _build_turn(room, player_id, registry, log, choices=choices)
-    if state.current_phase == TurnPhase.PLAY.value:
+    if effective_hand_size(state, player_id) > HAND_LIMIT:
+        state.current_phase = TurnPhase.DISCARD.value
         turn.resume_after(TurnPhase.PLAY)
         turn.enter_phase(TurnPhase.DISCARD)
+        turn.enter_phase(TurnPhase.TURN_END)
     else:
-        turn.resume_after(TurnPhase.DISCARD)
-    turn.enter_phase(TurnPhase.TURN_END)
+        state.current_phase = TurnPhase.PLAY.value
+        turn.resume_after(TurnPhase.PLAY)
+        turn.enter_phase(TurnPhase.DISCARD)
+        turn.enter_phase(TurnPhase.TURN_END)
     _sync_zone(room, player_id)
     _apply_pending_zones(room, log.announce)
     winner = combat.check_game_over()

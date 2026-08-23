@@ -582,6 +582,24 @@ function MatchScreen(props: {
     mode: false,
     indexes: [] as number[],
   });
+  const discardDraftRef = useRef(discardDraft);
+  const discardRevisionRef = useRef(`${match.revision}:${match.active_player_id}`);
+  useEffect(() => {
+    discardDraftRef.current = discardDraft;
+  }, [discardDraft]);
+  useEffect(() => {
+    const revisionKey = `${match.revision}:${match.active_player_id}`;
+    if (discardRevisionRef.current === revisionKey) return;
+    discardRevisionRef.current = revisionKey;
+    window.setTimeout(() => {
+      setDiscardDraft((current) => ({
+        revision: match.revision,
+        activePlayerId: match.active_player_id,
+        mode: current.mode,
+        indexes: [],
+      }));
+    }, 0);
+  }, [match.revision, match.active_player_id]);
   const me = match.players[String(match.player_id)];
   const opponentId = match.player_id === 1 ? 2 : 1;
   const opponent = match.players[String(opponentId)];
@@ -593,7 +611,7 @@ function MatchScreen(props: {
   const draftIsCurrent = discardDraft.revision === match.revision && discardDraft.activePlayerId === match.active_player_id;
   const discardMode = draftIsCurrent && discardDraft.mode;
   const discardSelection = draftIsCurrent ? discardDraft.indexes : [];
-  const selectingDiscard = discardMode || inDiscard;
+  const selectingDiscard = discardMode;
   const effectiveHandSize = match.you.effective_hand_size ?? match.you.hand_cards.length;
   const excessCards = Math.max(0, effectiveHandSize - match.hand_limit);
   const currentPhase = phaseIndex[match.current_phase ?? ""] ?? -1;
@@ -774,23 +792,6 @@ function MatchScreen(props: {
     props.onInteractionChange(next);
   };
 
-  const toggleDiscard = (index: number) => {
-    cancelScheduledPlay();
-    const discardable = match.you.card_discardable?.[index] ?? ![49, 50].includes(match.you.hand_cards[index]);
-    if (!discardable) return;
-    const currentIndexes = discardDraft.revision === match.revision && discardDraft.activePlayerId === match.active_player_id ? discardDraft.indexes : [];
-    const nextIndexes = toggleLimitedIndex(currentIndexes, index, match.you.hand_cards.length);
-    if (!nextIndexes.length) {
-      props.send("discard_cards", { indexes: [...currentIndexes].sort((left, right) => left - right) });
-    }
-    setDiscardDraft({
-        revision: match.revision,
-        activePlayerId: match.active_player_id,
-        mode: true,
-        indexes: nextIndexes,
-    });
-  };
-
   const beginDiscardPress = (index: number) => {
     const discardable = match.you.card_discardable?.[index] ?? ![49, 50].includes(match.you.hand_cards[index]);
     if (!discardable) return;
@@ -801,7 +802,8 @@ function MatchScreen(props: {
         window.clearTimeout(playTimerRef.current);
         playTimerRef.current = null;
         setActiveDiscardTarget(null);
-        toggleDiscard(index);
+        setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: discardMode, indexes: [] });
+        props.send("discard_card", { index });
         return;
       }
       cancelScheduledPlay();
@@ -824,7 +826,8 @@ function MatchScreen(props: {
     if (pending && pending.index === index) {
       playTimerRef.current = null;
       setActiveDiscardTarget(null);
-      toggleDiscard(index);
+      setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: discardMode, indexes: [] });
+      props.send("discard_card", { index });
     }
   };
 
@@ -932,9 +935,7 @@ function MatchScreen(props: {
                 const discardable = match.you.card_discardable?.[index] ?? ![49, 50].includes(cardId);
                 const selected = discardSelection.includes(index);
                 const activeTarget = !selectingDiscard && activePlayTarget?.source === "hand" && activePlayTarget.index === index;
-                const discardTarget = selectingDiscard && (
-                  activeDiscardTarget?.index === index || discardDraft.indexes.includes(index)
-                );
+                const discardTarget = selectingDiscard && activeDiscardTarget?.index === index;
                 
                 const totalCards = handView === "cards" ? visibleHandCards.length : visibleCreatures.length;
 
@@ -972,8 +973,8 @@ function MatchScreen(props: {
                       zIndex: 100, 
                       transition: { type: "tween", ease: "easeOut", duration: 0.1 } 
                     }}
-                    aria-pressed={activeTarget || discardTarget || (selectingDiscard ? selected : undefined)}
-                    className={`hand-card-button ${selected ? "discard-selected" : ""} ${activeTarget || discardTarget ? "press-selected" : ""} ${!selectingDiscard && handRelayouting ? "relayout" : ""}`}
+                    aria-pressed={activeTarget || discardTarget}
+                    className={`hand-card-button ${activeTarget || discardTarget ? "press-selected" : ""} ${!selectingDiscard && handRelayouting ? "relayout" : ""}`}
                     key={`${cardId}-${index}`}
                     type="button"
                     disabled={selectingDiscard ? !myTurn || match.pending_choice || !discardable : !canPlay}
@@ -995,7 +996,7 @@ function MatchScreen(props: {
                       }
                     }}
                   >
-                    <GameCard card={card} characterId={myCharacter} cardId={cardId} cost={cost} index={index} discardState={selectingDiscard ? selected ? "selected" : discardable ? "available" : "blocked" : "none"} />
+                    <GameCard card={card} characterId={myCharacter} cardId={cardId} cost={cost} index={index} discardState="none" />
                   </motion.button>
                 );
               })}
@@ -1003,11 +1004,13 @@ function MatchScreen(props: {
           </div>
         </div>
         <div className="log-actions layout-region" data-region="actionPanel" style={{ transform: `translate(calc(-50% + ${regionOffsets.actionPanel.x}px), calc(0px + ${regionOffsets.actionPanel.y}px))` }} onPointerDown={(event) => startRegionDrag(event, "actionPanel")}>
-          <button type="button" className={`discard-toggle ${selectingDiscard ? "active" : ""}`} disabled={!myTurn || match.pending_choice || (!inPlay && !inDiscard)} onClick={() => setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: !(discardDraft.revision === match.revision && discardDraft.activePlayerId === match.active_player_id && discardDraft.mode), indexes: [] })}>{selectingDiscard ? "退出弃牌" : "进入弃牌"}</button>
+          <button type="button" className={`discard-toggle ${discardMode ? "active" : ""}`} disabled={!myTurn || match.pending_choice || !inPlay} onClick={() => { setActiveDiscardTarget(null); setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: !discardMode, indexes: [] }); }}>{discardMode ? "退出弃牌" : "进入弃牌"}</button>
           <button type="button" className={`hand-view-toggle ${handView === "creatures" ? "active" : ""}`} aria-label={handView === "cards" ? "切换到手中生物" : "切换到手牌"} onClick={() => setHandView(handView === "cards" ? "creatures" : "cards")}>{handView === "cards" ? `生 ${creatures.length}` : `牌 ${match.you.hand_cards.length}`}</button>
-          <button type="button" className="settings-toggle" onClick={() => setSettingsOpen(true)}>界面</button>
-          <button type="button" className="layout-reset" onClick={resetRegionOffsets}>复位</button>
           <button type="button" className="turn-end" disabled={!myTurn || match.pending_choice || (!inPlay && !inDiscard) || excessCards > 0} onClick={() => { setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: false, indexes: [] }); props.send("end_turn"); }}>{excessCards > 0 ? `还需弃 ${excessCards} 张` : "结束回合"} <b>→</b></button>
+        </div>
+        <div className="interface-actions">
+          <button type="button" className="icon-button layout-reset" aria-label="复位界面布局" title="复位界面布局" onClick={resetRegionOffsets}>⟲</button>
+          <button type="button" className="icon-button settings-toggle" aria-label="打开界面设置" title="界面设置" onClick={() => setSettingsOpen(true)}>⚙</button>
         </div>
         <div className="layout-region log-region" data-region="logPanel" style={{ position: "fixed", right: 40, bottom: 40, transform: `translate(${regionOffsets.logPanel.x}px, ${regionOffsets.logPanel.y}px)` }} onPointerDown={(event) => startRegionDrag(event, "logPanel")}>
           <LogPanel logs={props.logs} chatText={props.chatText} setChatText={props.setChatText} submitChat={props.submitChat} />

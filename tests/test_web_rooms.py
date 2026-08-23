@@ -304,7 +304,7 @@ class RoomManagerTests(unittest.IsolatedAsyncioTestCase):
             self.host_id,
             {"action": "discard_card", "data": {"index": 0}},
         )
-        self.assertEqual(room.state.current_phase, "弃牌阶段")
+        self.assertEqual(room.state.current_phase, "出牌阶段")
         self.host.clear()
         self.guest.clear()
 
@@ -327,7 +327,7 @@ class RoomManagerTests(unittest.IsolatedAsyncioTestCase):
             {"action": "discard_cards", "data": {"indexes": [1, 4]}},
         )
 
-        self.assertEqual(room.state.current_phase, "弃牌阶段")
+        self.assertEqual(room.state.current_phase, "出牌阶段")
         self.assertEqual(room.card_zones[1].hand, [1, 3, 4, 6])
         self.assertEqual(room.card_zones[1].discard_pile[-2:], [2, 5])
         self.assertEqual(room.revision, revision + 1)

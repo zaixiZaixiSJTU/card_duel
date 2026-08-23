@@ -48,7 +48,7 @@ test("keeps the WebSocket protocol contract and safe deployment defaults", async
     "select_character",
     "set_ready",
     "play_card",
-    "discard_cards",
+    "discard_card",
     "end_turn",
     "resolve_choice",
   ]) {
