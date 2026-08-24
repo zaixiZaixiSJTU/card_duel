@@ -316,7 +316,7 @@ class SlugcatTests(unittest.TestCase):
             private_announce=self.messages.append,
         )
 
-        self.assertTrue(damage_creature(context, 2, 25, 5, threat=False))
+        self.assertEqual(damage_creature(context, 2, 25, 5, threat=False), 5)
 
         self.assertEqual(data.scavenger_kills, 5)
         self.assertIn(56, data.ability_unlocks)
@@ -573,7 +573,6 @@ class SlugcatTests(unittest.TestCase):
         target = self.game.players[2]
         self.assertEqual(target.statuses.pending_hand_additions, [50])
         self.assertEqual(target.statuses.inserted_cards[0].owner_id, 1)
-        target.statuses.electric_strength_penalty = 3
 
         self.game.local_player_id = 2
         self.game.hand_cards[:] = [50]
@@ -592,8 +591,98 @@ class SlugcatTests(unittest.TestCase):
 
         self.assertEqual(self.game.players[1].statuses.pending_draw_returns, [])
         self.assertEqual(target.statuses.embedded_electric_spears, 0)
-        self.assertEqual(target.strength, 2)
-        self.assertEqual(target.statuses.electric_strength_penalty, 1)
+        self.assertEqual(target.strength, 0)
+
+    def test_electric_spear_reduces_attack_card_value(self):
+        self.game.players[1].statuses.embedded_electric_spears = 1
+        self.game.players[1].energy = 5
+        self.game.players[2].health = 30
+
+        self.assertTrue(self.play(1))  # 钢筋 2 伤 - 电矛2 = 0
+
+        self.assertEqual(self.game.players[2].health, 30)
+        self.assertTrue(any("受电矛影响" in message for message in self.messages))
+
+    def test_electric_spear_reduces_warrior_attack_value(self):
+        self.game.character_ids = {1: 1, 2: 4}
+        self.combat = CombatEngine(self.game, DEFAULT_REGISTRY)
+        self.combat.initialize_players()
+        self.game.players[1].statuses.embedded_electric_spears = 1
+        self.game.players[1].energy = 1
+
+        self.assertTrue(
+            DEFAULT_REGISTRY.play(
+                state=self.game,
+                character_id=1,
+                card_id=1,
+                source_player_id=1,
+                target_player_id=2,
+                announce=self.messages.append,
+                combat=self.combat,
+            )
+        )
+
+        self.assertEqual(self.game.players[2].health, 3)  # 攻4 - 电矛2 = 2
+
+    def test_electric_spear_reduces_creature_attack(self):
+        self.game.players[1].statuses.embedded_electric_spears = 1
+        add_hand_creature(self.game, 1, 19, owner_id=1)
+        self.game.players[1].health = 20
+
+        self._run_turn_end(DEFAULT_CHOICES)
+
+        self.assertEqual(self.game.players[1].health, 12)  # 秃鹫10 - 电矛2 = 8
+        self.assertTrue(any("削弱了生物攻击" in message for message in self.messages))
+
+    def test_spear_penetration_applies_on_creature_kill(self):
+        self.game.players[1].energy = 10
+        add_hand_creature(self.game, 2, 18, owner_id=2)
+        self.game.players[2].health = 30
+
+        self.assertTrue(
+            DEFAULT_REGISTRY.play(
+                state=self.game,
+                character_id=4,
+                card_id=4,  # 炸矛
+                source_player_id=1,
+                target_player_id=2,
+                announce=self.messages.append,
+                combat=self.combat,
+                choices=_KillRayChoices(),
+            )
+        )
+
+        self.assertEqual(self.game.players[2].statuses.hand_creatures, [])
+        self.assertEqual(self.game.players[2].health, 20)  # 穿透 -10
+        self.assertEqual(self.game.players[2].statuses.pending_discards, 0)
+
+    def test_spear_penetration_on_creature_hit_same_but_no_discard(self):
+        self.game.players[1].energy = 10
+        add_hand_creature(self.game, 2, 19, owner_id=2)  # 秃鹫 15血
+        self.game.players[2].health = 30
+
+        class _KillVultureChoices(AutomaticChoiceProvider):
+            def choose_option(self, title, prompt, options, default):
+                return next(option for option in options if "秃鹫" in option)
+
+        self.assertTrue(
+            DEFAULT_REGISTRY.play(
+                state=self.game,
+                character_id=4,
+                card_id=4,  # 炸矛
+                source_player_id=1,
+                target_player_id=2,
+                announce=self.messages.append,
+                combat=self.combat,
+                choices=_KillVultureChoices(),
+            )
+        )
+
+        # 扣血即穿透，效果与玩家一致；生物无牌可弃，弃牌部分落空
+        self.assertEqual(len(self.game.players[2].statuses.hand_creatures), 1)
+        self.assertEqual(self.game.players[2].health, 20)
+        self.assertEqual(self.game.players[2].statuses.pending_discards, 0)
+        self.assertTrue(any("穿透生物" in message for message in self.messages))
 
     def test_dead_creature_is_consumed_and_not_returned_to_summon_pool(self):
         data = slugcat_data(self.game.players[1])
@@ -806,8 +895,8 @@ class SlugcatTests(unittest.TestCase):
         add_hand_creature(self.game, 1, 22, owner_id=1)
         add_hand_creature(self.game, 2, 22, owner_id=2)
 
-        self.assertFalse(
-            damage_creature(self._damage_context(), 2, 22, 8, threat=False)
+        self.assertEqual(
+            damage_creature(self._damage_context(), 2, 22, 8, threat=False), 8
         )
 
         self.assertEqual(centipede_health(self.game), 12)
@@ -820,11 +909,11 @@ class SlugcatTests(unittest.TestCase):
         add_hand_creature(self.game, 1, 22, owner_id=1)
         add_hand_creature(self.game, 2, 22, owner_id=2)
 
-        self.assertFalse(
-            damage_creature(self._damage_context(), 1, 22, 19, threat=False)
+        self.assertEqual(
+            damage_creature(self._damage_context(), 1, 22, 19, threat=False), 19
         )
-        self.assertTrue(
-            damage_creature(self._damage_context(), 1, 22, 1, threat=False)
+        self.assertEqual(
+            damage_creature(self._damage_context(), 1, 22, 1, threat=False), 1
         )
 
         self.assertEqual(centipede_health(self.game), 0)
@@ -886,8 +975,8 @@ class SlugcatTests(unittest.TestCase):
 
     def test_centipede_does_not_spread_when_dead(self):
         add_hand_creature(self.game, 1, 22, owner_id=1)
-        self.assertTrue(
-            damage_creature(self._damage_context(), 1, 22, 20, threat=False)
+        self.assertEqual(
+            damage_creature(self._damage_context(), 1, 22, 20, threat=False), 20
         )
 
         _resolve_centipede_spread(self.game, 1, self.messages.append)

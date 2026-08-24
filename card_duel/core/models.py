@@ -43,7 +43,6 @@ class CombatStatuses:
     pending_discards: int = 0
     embedded_steel_rods: int = 0
     embedded_electric_spears: int = 0
-    electric_strength_penalty: int = 0
     inserted_cards: list[InsertedCardState] = field(default_factory=list)
     hand_creatures: list[CreatureState] = field(default_factory=list)
     creature_threats: list[CreatureState] = field(default_factory=list)
@@ -140,6 +139,7 @@ class GameState:
     round_number: int = 0
     active_player_id: PlayerId | None = None
     current_phase: str | None = None
+    round1_lock_health: int | None = None
 
     @property
     def hand_size(self) -> int:

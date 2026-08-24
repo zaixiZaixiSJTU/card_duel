@@ -36,9 +36,6 @@ def handler_for(card_id: int):
             context.source.statuses.embedded_electric_spears = max(
                 0, context.source.statuses.embedded_electric_spears - 1
             )
-            restored = min(2, context.source.statuses.electric_strength_penalty)
-            context.source.strength += restored
-            context.source.statuses.electric_strength_penalty -= restored
             normal_card_id = None
             item_name = "电矛"
 
@@ -58,7 +55,7 @@ def handler_for(card_id: int):
 def definitions_for(character_id: int) -> tuple[CardDefinition, ...]:
     descriptions = {
         49: "耗能1拔出体内钢筋；普通钢筋返回原主人的牌堆。不可弃牌。",
-        50: "耗能1拔出电矛并恢复对应力量；电矛消耗，不返还。不可弃牌。",
+        50: "耗能1拔出电矛（攻击数值惩罚-2/根）；电矛消耗，不返还。不可弃牌。",
     }
     return tuple(
         CardDefinition(

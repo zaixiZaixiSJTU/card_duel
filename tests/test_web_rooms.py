@@ -309,7 +309,7 @@ class RoomManagerTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        self.assertEqual(room.state.players[2].health, 28)
+        self.assertEqual(room.state.players[2].health, 26)
         self.assertEqual(room.card_zones[1].hand, [])
         self.assertEqual(room.card_zones[1].discard_pile[-1], 1)
         self.assertEqual(self.host.pop("card_played")["data"]["card_id"], 1)

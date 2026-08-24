@@ -155,7 +155,7 @@ def _attack(card_id: int, base_damage: int, on_penetrate=None):
     return effect
 
 
-def _insert_steel_rod(context):
+def _insert_steel_rod(context, creature_hit=False):
     context.target.statuses.embedded_steel_rods += 1
     context.target.statuses.inserted_cards.append(
         InsertedCardState(49, context.source_player_id)
@@ -164,15 +164,19 @@ def _insert_steel_rod(context):
     context.announce(f"钢筋插入玩家{context.target_player_id}的手牌")
 
 
-def _insert_explosive_spear(context):
+def _insert_explosive_spear(context, creature_hit=False):
     context.combat.lose_life(10, context.target_player_id, context.announce)
-    context.target.statuses.pending_discards += 1
-    context.announce(
-        f"炸矛穿透：玩家{context.target_player_id}失去10点生命并随机弃1张牌"
-    )
+    if not creature_hit:
+        context.target.statuses.pending_discards += 1
+        context.announce(
+            f"炸矛穿透：玩家{context.target_player_id}失去10点生命并随机弃1张牌"
+        )
+    else:
+        # 生物目标无牌可弃：穿透效果相同，仅弃牌部分自然落空。
+        context.announce(f"炸矛穿透生物：玩家{context.target_player_id}失去10点生命")
 
 
-def _insert_electric_spear(context):
+def _insert_electric_spear(context, creature_hit=False):
     context.target.statuses.embedded_electric_spears += 1
     context.target.statuses.inserted_cards.append(
         InsertedCardState(50, context.source_player_id)

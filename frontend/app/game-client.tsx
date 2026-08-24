@@ -1208,6 +1208,15 @@ function cardImage(characterId: number, cardId: number) {
 function GameCard({ card, characterId = 1, cardId, cost, index, discardState, creatureHealth, creatureShell, stackCount }: { card?: CardDefinition; characterId?: number; cardId: number; cost: number | null; index: number; discardState: "none" | "available" | "selected" | "blocked"; creatureHealth?: number; creatureShell?: boolean; stackCount?: number }) {
   const cardType = card?.card_type ?? "卡牌";
   const image = card ? cardImage(characterId, card.card_id) : null;
+  const discardLabel = discardState === "selected" ? "− 退回" : discardState === "blocked" ? "不可弃置" : "+ 选择弃置";
+  if (image) {
+    // 有完整卡面的角色（战士）直接展示图片，数值都在图上，不再包一层外观。
+    return <article className={`game-card game-card-image ${discardState !== "none" ? "discard-mode" : ""} ${discardState === "selected" ? "discard-selected" : ""}`}>
+      <Image className="card-art-image" src={image} alt="" width={320} height={220} />
+      {typeof stackCount === "number" && <span className="stack-count-badge">× {stackCount}</span>}
+      {discardState !== "none" && <em>{discardLabel}</em>}
+    </article>;
+  }
   return <article className={`game-card ${cardTone(cardType)} ${discardState !== "none" ? "discard-mode" : ""} ${discardState === "selected" ? "discard-selected" : ""}`}>
     <div className="card-top">
       <GameTooltip focusable={false} className="card-type-tooltip" explanation={cardTypeExplanation(cardType)}><span>{cardType}</span></GameTooltip>
@@ -1222,7 +1231,7 @@ function GameCard({ card, characterId = 1, cardId, cost, index, discardState, cr
     <div className="card-copy"><strong>{card?.name ?? `卡牌 ${cardId}`}</strong><p><RuleText text={card?.description || "暂无卡牌说明"} /></p></div>
     {typeof stackCount === "number" && <span className="stack-count-badge">× {stackCount}</span>}
     <small>#{String(index + 1).padStart(2, "0")} · ID {cardId}</small>
-    {discardState !== "none" && <em>{discardState === "selected" ? "− 退回" : discardState === "blocked" ? "不可弃置" : "+ 选择弃置"}</em>}
+    {discardState !== "none" && <em>{discardLabel}</em>}
   </article>;
 }
 

@@ -45,7 +45,7 @@ def unavailable(context):
 def attack(context):
     if not _spend(context, 1):
         return False
-    damage = 2 + context.source.strength
+    damage = 4 + context.source.strength
     context.combat.resolve_attack(context, damage, "攻")
     return True
 
@@ -53,18 +53,18 @@ def attack(context):
 def defend(context):
     if not _spend(context, 2):
         return False
-    add_defence(context.source.defences, 3)
-    context.announce(f"玩家{context.source_player_id}使用防（防御+3）")
+    add_defence(context.source.defences, 5)
+    context.announce(f"玩家{context.source_player_id}使用防（防御+5）")
     return True
 
 
 def shield_bash(context):
     if not _spend(context, 2):
         return False
-    damage = 2 + context.source.strength
-    add_defence(context.source.defences, 2)
+    damage = 4 + context.source.strength
+    add_defence(context.source.defences, 3)
     context.combat.resolve_attack(context, damage, "盾击")
-    context.announce(f"玩家{context.source_player_id}通过盾击获得2点防御")
+    context.announce(f"玩家{context.source_player_id}通过盾击获得3点防御")
     return True
 
 
@@ -96,7 +96,7 @@ def sacrifice(context):
 def heavy_sword(context):
     if not _spend(context, 3):
         return False
-    damage = 3 + 2 * context.source.strength
+    damage = 6 + 2 * context.source.strength
     context.combat.resolve_attack(context, damage, "重剑打击")
     return True
 
@@ -104,7 +104,7 @@ def heavy_sword(context):
 def heavy_hammer(context):
     if not _spend(context, 7):
         return False
-    damage = 10 + context.source.strength
+    damage = 13 + context.source.strength
     context.combat.resolve_attack(context, damage, "重锤打击")
     return True
 
@@ -177,8 +177,8 @@ def full_body_slam(context):
 def immovable_mountain(context):
     if not _spend(context, 3):
         return False
-    add_defence(context.source.defences, 10)
-    context.announce(f"玩家{context.source_player_id}不动如山（防御+10）")
+    add_defence(context.source.defences, 13)
+    context.announce(f"玩家{context.source_player_id}不动如山（防御+13）")
     return True
 
 

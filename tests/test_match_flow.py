@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from card_duel.application.combat import CombatEngine
 from card_duel.cards.catalog import DEFAULT_REGISTRY
+from card_duel.core.game import TurnEngine, TurnPhase
 from card_duel.core.models import GameState
 from card_duel.core.rules import build_shuffled_deck
 from card_duel.network.session import GameSession
@@ -146,10 +147,14 @@ class MatchFlowTests(unittest.TestCase):
         game.round_number = 1
         combat = CombatEngine(game, DEFAULT_REGISTRY)
         combat.initialize_players()
-        game.players[1].energy = 1
-        game.players[2].health = 20
-        game.hand_cards[:] = [1]
         messages = []
+        turn = TurnEngine(game, 1, 1, messages.append)
+        combat.register_turn_handlers(turn)
+        turn.enter_phase(TurnPhase.TURN_START)
+        turn.enter_phase(TurnPhase.DRAW)
+        turn.enter_phase(TurnPhase.PLAY)
+        game.players[1].energy = 1
+        game.hand_cards[:] = [1]
 
         DEFAULT_REGISTRY.play(
             state=game,
@@ -161,9 +166,18 @@ class MatchFlowTests(unittest.TestCase):
             combat=combat,
         )
 
-        self.assertEqual(game.players[2].health, 20)
-        self.assertTrue(any("无法造成生命损失" in m for m in messages))
+        # 攻击结算后血量暂时下降
+        self.assertEqual(game.players[2].health, 3)
         # 其他效果保留：钢筋仍插入后手方
+        self.assertEqual(game.players[2].statuses.embedded_steel_rods, 1)
+        self.assertIn(49, game.players[2].statuses.pending_hand_additions)
+
+        turn.enter_phase(TurnPhase.DISCARD)
+        turn.enter_phase(TurnPhase.TURN_END)
+
+        # 回合结束时对方生命锁定回满，其他效果保留
+        self.assertEqual(game.players[2].health, 5)
+        self.assertTrue(any("生命锁定" in m for m in messages))
         self.assertEqual(game.players[2].statuses.embedded_steel_rods, 1)
         self.assertIn(49, game.players[2].statuses.pending_hand_additions)
 
@@ -178,7 +192,7 @@ class MatchFlowTests(unittest.TestCase):
             announce=messages.append,
             combat=combat,
         )
-        self.assertEqual(game.players[2].health, 18)
+        self.assertEqual(game.players[2].health, 3)
 
     def test_announce_room_config_logs_settings(self):
         window = _LogWindow()

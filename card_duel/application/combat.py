@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from card_duel.cards.registry import CardRegistry
+from card_duel.core.game import TurnPhase
 from card_duel.core.models import CombatStatuses, GameState, ScheduledEvent
 from card_duel.core.rules import add_defence, draw_cards
 
@@ -107,6 +108,15 @@ class CombatEngine:
         on_player_penetrate=None,
     ) -> int:
         """Delegate optional non-player targets to an installed character pack."""
+        source = self.state.players[context.source_player_id]
+        spears = source.statuses.embedded_electric_spears
+        if spears:
+            penalty = spears * 2
+            damage = max(0, damage - penalty)
+            context.announce(
+                f"玩家{context.source_player_id}受电矛影响，"
+                f"本次攻击数值-{penalty}"
+            )
         registered = set()
         for character_id in self.state.character_ids.values():
             if character_id is None or character_id in registered:
@@ -163,6 +173,38 @@ class CombatEngine:
             self.resolve_scheduled_event(event, announce)
 
     def register_turn_handlers(self, turn) -> None:
+        def lock_round1_health_start(context):
+            """先手方第一回合开始：锁定对方生命（回合结束统一恢复为满血）。"""
+            if (
+                self.state.round_number == 1
+                and self.state.first_player_id == context.player_id
+            ):
+                self.state.round1_lock_health = self.state.players[
+                    context.opponent_id
+                ].health
+
+        def restore_round1_health_end(context):
+            if (
+                self.state.round1_lock_health is not None
+                and self.state.first_player_id == context.player_id
+            ):
+                opponent = self.state.players[context.opponent_id]
+                locked = self.state.round1_lock_health
+                if opponent.health != locked:
+                    opponent.health = locked
+                    context.announce(
+                        f"先手方第一回合：玩家{context.opponent_id}生命锁定为{locked}"
+                        "（其它效果保留）"
+                    )
+                self.state.round1_lock_health = None
+
+        turn.register_phase_handler(
+            TurnPhase.TURN_START, lock_round1_health_start, priority=5
+        )
+        turn.register_phase_handler(
+            TurnPhase.TURN_END, restore_round1_health_end, priority=90
+        )
+
         registered: set[int] = set()
         for character_id in self.state.character_ids.values():
             if character_id is None or character_id in registered:

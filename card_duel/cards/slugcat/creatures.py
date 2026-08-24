@@ -256,38 +256,27 @@ def resolve_attack(
     target = next((item for item in targets if item.label == selected), targets[0])
     if target.zone == "player":
         player = context.state.players[target.player_id]
-        hp_before = player.health
         total, agility_consumed, life_loss = context.combat.apply_damage_with_report(
             damage, target.player_id, None
         )
-        blocked_round1 = (
-            context.state.round1_no_damage
-            and context.state.round_number == 1
-            and context.state.first_player_id == context.source_player_id
-        )
-        shown_loss = life_loss
-        if blocked_round1:
-            # 先手方第一回合不扣血：结算后把后手方血量恢复为攻击前，
-            # 插入/弃牌等其它效果照常保留。
-            player.health = hp_before
-            shown_loss = 0
         context.announce(
             f"玩家{context.source_player_id}使用{card_name}攻击{target.label}"
-            f"（总伤害{total}，扣敏捷{agility_consumed}，实际扣血{shown_loss}）"
+            f"（总伤害{total}，扣敏捷{agility_consumed}，实际扣血{life_loss}）"
         )
         if life_loss > 0 and on_player_penetrate is not None:
             on_player_penetrate(context)
-        if blocked_round1:
-            context.announce("先手方第一回合无法造成生命损失（血量已恢复）")
-        return shown_loss
+        return life_loss
     context.announce(f"玩家{context.source_player_id}使用{card_name}攻击{target.label}")
-    damage_creature(
+    dealt = damage_creature(
         context,
         target.player_id,
         target.card_id,
         damage,
         threat=target.zone == "threat",
     )
+    # 矛类穿透效果对生物同样生效：造成伤害即视同穿透，插入/弃牌等照常触发。
+    if dealt > 0 and on_player_penetrate is not None:
+        on_player_penetrate(context, creature_hit=True)
     return 0
 
 
@@ -303,11 +292,11 @@ def damage_creature(
     zone = statuses.creature_threats if threat else statuses.hand_creatures
     creature = next((item for item in zone if item.card_id == card_id), None)
     if creature is None:
-        return False
+        return 0
     if card_id == 17 and not statuses.noodle_fly_immunity_used:
         statuses.noodle_fly_immunity_used = True
         context.announce("面条蝇免疫了本次攻击")
-        return False
+        return 0
 
     if card_id == 22:
         lost = _reduce_centipede_health(context.state, damage)
@@ -316,22 +305,23 @@ def damage_creature(
             f"（剩余{centipede_health(context.state)}）"
         )
         if centipede_health(context.state) > 0:
-            return False
+            return lost
         zone.remove(creature)
         _track_attacker_kills(context, card_id)
         _kill_centipede(context, player_id, creature)
-        return True
+        return lost
 
-    creature.health -= max(0, damage)
+    actual = min(max(0, damage), creature.health)
+    creature.health -= actual
     context.announce(
-        f"对{SLUGCAT_SPECS_BY_ID[card_id].name}造成{damage}点伤害"
+        f"对{SLUGCAT_SPECS_BY_ID[card_id].name}造成{actual}点伤害"
         f"（剩余{max(0, creature.health)}）"
     )
     if card_id == 23:
         context.combat.apply_damage(3, context.source_player_id, context.announce)
         context.announce(f"烈焰蜥蜴反伤玩家{context.source_player_id}3点伤害")
     if creature.health > 0:
-        return False
+        return actual
 
     zone.remove(creature)
     _track_attacker_kills(context, card_id)
@@ -344,7 +334,7 @@ def damage_creature(
         context.announce,
         private_announce=context.private_announce,
     )
-    return True
+    return actual
 
 
 def _track_attacker_kills(context, card_id: int) -> None:

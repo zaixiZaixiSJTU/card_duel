@@ -82,7 +82,6 @@ class SlugcatRules:
                 slugcat_data(player), 37
             ):
                 slugcat_data(player).wave_skill_returned = False
-            _apply_electric_penalty(player, context.player_id, context.announce)
 
         def on_turn_end(context):
             player = context.game_state.players[context.player_id]
@@ -93,10 +92,6 @@ class SlugcatRules:
                 combat,
             )
             _resolve_creatures(context, combat)
-            penalty = player.statuses.electric_strength_penalty
-            if penalty:
-                player.strength += penalty
-                player.statuses.electric_strength_penalty = 0
             if isinstance(player.character_data, SlugcatData):
                 slugcat_data(player).momentum = 0
 
@@ -250,16 +245,6 @@ def _return_discarded_card(state, player_id: int, card_id: int) -> None:
         state.discard_pile.append(card_id)
 
 
-def _apply_electric_penalty(player, player_id: int, announce) -> None:
-    spears = player.statuses.embedded_electric_spears
-    if not spears:
-        return
-    penalty = spears * 2
-    player.strength -= penalty
-    player.statuses.electric_strength_penalty = penalty
-    announce(f"电矛使玩家{player_id}本回合力量-{penalty}")
-
-
 def _resolve_inserted_items(state, player_id: int, announce, combat) -> None:
     rods = state.players[player_id].statuses.embedded_steel_rods
     if rods:
@@ -349,6 +334,10 @@ def _resolve_creatures(context, combat) -> None:
             creature, centipede_count, player_id, context.announce
         )
         if damage:
+            electric = player.statuses.embedded_electric_spears * 2
+            if electric:
+                damage = max(0, damage - electric)
+                context.announce(f"电矛削弱了生物攻击（-{electric}）")
             total, agility_consumed, actual = combat.apply_damage_with_report(
                 damage, player_id, context.announce
             )
