@@ -54,6 +54,7 @@ class SlugcatData:
     spear_kill_types: set[int] = field(default_factory=set)
     maze_agility_reached: bool = False
     sky_colored_pearl_played: bool = False
+    form_copies: dict[int, int] = field(default_factory=dict)
 
 
 def slugcat_data(player) -> SlugcatData:

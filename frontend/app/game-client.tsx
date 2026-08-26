@@ -20,13 +20,20 @@ import { toggleLimitedIndex } from "./selection";
 type ConnectionStatus = "idle" | "connecting" | "connected" | "closed";
 
 type CharacterOption = { character_id: number; name: string };
-type RoomPlayer = { player_id: number; character_id: number | null; ready: boolean };
+type RoomPlayer = {
+  player_id: number;
+  character_id: number | null;
+  ready: boolean;
+  deck_counts?: Record<string, Record<string, number>>;
+};
 type RoomView = {
   room_code: string;
   status: string;
   settings: { first_player: string; seed: number | null; round1_no_damage: boolean };
   players: RoomPlayer[];
   characters: CharacterOption[];
+  catalogs?: Record<string, CardDefinition[]>;
+  default_deck_counts?: Record<string, Record<string, number>>;
 };
 
 type CardDefinition = {
@@ -525,8 +532,110 @@ function LobbyScreen(props: {
   const { room, playerId, send } = props;
   const local = room.players.find((player) => player.player_id === playerId);
   const isHost = playerId === 1;
+  const [deckEditorOpen, setDeckEditorOpen] = useState(false);
+  const [deckEditorCharacter, setDeckEditorCharacter] = useState<number | null>(null);
+  const [deckCounts, setDeckCounts] = useState<Record<number, Record<number, number>>>({});
+  const [previewedCard, setPreviewedCard] = useState<CardDefinition | null>(null);
+  const savedDeckKey = `cardDuel.deck.${playerId}`;
+  const deckSyncRef = useRef(false);
+  const [viewportHeight, setViewportHeight] = useState(() =>
+    typeof window === "undefined" ? 800 : window.innerHeight,
+  );
+  useEffect(() => {
+    const measure = () => setViewportHeight(window.innerHeight);
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+  const enlargeScale = Math.min(
+    1.25,
+    Math.max(0.7, (viewportHeight - 130) / 240),
+  );
+  useEffect(() => {
+    if (deckSyncRef.current) return;
+    deckSyncRef.current = true;
+    let saved: Record<string, Record<string, number>> | null = null;
+    try {
+      const raw = localStorage.getItem(savedDeckKey);
+      saved = raw ? JSON.parse(raw) : null;
+    } catch {
+      saved = null;
+    }
+    if (!saved) return;
+    for (const [charKey, counts] of Object.entries(saved)) {
+      if (!local?.deck_counts?.[charKey]) {
+        send("configure_character_deck", {
+          character_id: Number(charKey),
+          deck_counts: counts,
+        });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const selectedCharacterId = deckEditorCharacter ?? local?.character_id ?? null;
+  const defaultDeckCounts = room.default_deck_counts ?? {};
+  const serverDeckFor = (characterId: number) =>
+    local?.deck_counts?.[String(characterId)] ?? null;
+  const editorCatalog =
+    selectedCharacterId === null
+      ? []
+      : (room.catalogs?.[String(selectedCharacterId)] ?? []).filter(
+          (card) =>
+            selectedCharacterId !== 4 ||
+            (card.card_type !== "物品" && card.card_type !== "生物"),
+        );
+  const editorDefaults =
+    selectedCharacterId === null ? {} : defaultDeckCounts[String(selectedCharacterId)] ?? {};
+  const currentDeck =
+    selectedCharacterId === null
+      ? {}
+      : deckCounts[selectedCharacterId] ??
+        serverDeckFor(selectedCharacterId) ??
+        { ...editorDefaults };
+  const groupedEditorCards = Object.entries(editorCatalog.reduce<Record<string, CardDefinition[]>>((groups, card) => {
+    (groups[card.card_type] ??= []).push(card);
+    return groups;
+  }, {}));
+  const setDeckCount = (cardId: number, count: number) => {
+    if (selectedCharacterId === null) return;
+    const base =
+      deckCounts[selectedCharacterId] ??
+      serverDeckFor(selectedCharacterId) ??
+      { ...editorDefaults };
+    const next = { ...base, [cardId]: Math.max(0, Math.min(99, count)) };
+    setDeckCounts((current) => ({
+      ...current,
+      [selectedCharacterId]: next,
+    }));
+    try {
+      const existing = JSON.parse(localStorage.getItem(savedDeckKey) ?? "{}") ?? {};
+      existing[String(selectedCharacterId)] = next;
+      localStorage.setItem(savedDeckKey, JSON.stringify(existing));
+    } catch {
+      /* 本地保存失败不影响对局 */
+    }
+    send("configure_character_deck", {
+      character_id: selectedCharacterId,
+      deck_counts: next,
+    });
+  };
+  const restoreDefaultDeck = () => {
+    if (selectedCharacterId === null) return;
+    const defaults = { ...editorDefaults };
+    setDeckCounts((current) => ({ ...current, [selectedCharacterId]: defaults }));
+    try {
+      const existing = JSON.parse(localStorage.getItem(savedDeckKey) ?? "{}") ?? {};
+      existing[String(selectedCharacterId)] = defaults;
+      localStorage.setItem(savedDeckKey, JSON.stringify(existing));
+    } catch {
+      /* 本地保存失败不影响对局 */
+    }
+    send("configure_character_deck", {
+      character_id: selectedCharacterId,
+      deck_counts: defaults,
+    });
+  };
   return (
-    <main className="lobby-shell">
+    <main className="lobby-shell" style={{ "--enlarge-scale": String(enlargeScale) } as React.CSSProperties}>
       <Brand connection="connected" compact />
       <section className="lobby-header">
         <div><p className="eyebrow">ROOM CODE</p><button className="room-code" type="button" onClick={() => navigator.clipboard?.writeText(room.room_code)}>{room.room_code}<span>复制</span></button></div>
@@ -540,7 +649,7 @@ function LobbyScreen(props: {
             {room.characters.map((character) => {
               const selected = local?.character_id === character.character_id;
               const implemented = [1, 4].includes(character.character_id);
-              return <button key={character.character_id} type="button" disabled={!implemented} className={`character-card char-${character.character_id} ${selected ? "selected" : ""}`} onClick={() => send("select_character", { character_id: character.character_id })}>
+              return <button key={character.character_id} type="button" disabled={!implemented || !!local?.ready} title={local?.ready ? "已准备，请先取消准备" : undefined} className={`character-card char-${character.character_id} ${selected ? "selected" : ""}`} onClick={() => send("select_character", { character_id: character.character_id })}>
                 <span className="character-number">0{character.character_id}</span><div className="character-glyph">{character.character_id === 1 ? "战" : character.character_id === 4 ? "猫" : "?"}</div><small>{implemented ? "PLAYABLE" : "IN DEVELOPMENT"}</small><strong>{character.name}</strong><p><RuleText text={character.character_id === 1 ? "防御 · 力量 · 献祭" : character.character_id === 4 ? "敏捷 · 业力 · 生物" : "角色机制开发中"} /></p>{selected && <b>已选择</b>}
               </button>;
             })}
@@ -568,7 +677,75 @@ function LobbyScreen(props: {
           <LogPanel logs={props.logs} chatText={props.chatText} setChatText={props.setChatText} submitChat={props.submitChat} compact />
         </aside>
       </section>
-      <div className="lobby-ready-bar"><p>{local?.character_id ? `已选择 ${room.characters.find((item) => item.character_id === local.character_id)?.name}` : "请先选择角色"}</p><button type="button" disabled={!local?.character_id} className={local?.ready ? "ready-active" : ""} onClick={() => send("set_ready", { ready: !local?.ready })}>{local?.ready ? "取消准备" : "准备对局"}<span>→</span></button></div>
+      <div className="lobby-ready-bar">
+        <div className="lobby-ready-left">
+          <p>{local?.character_id ? `已选择 ${room.characters.find((item) => item.character_id === local.character_id)?.name}` : "请先选择角色"}</p>
+          <button type="button" className="deck-builder-toggle" disabled={!!local?.ready} title={local?.ready ? "已准备，请先取消准备" : undefined} onClick={() => { setDeckEditorCharacter(local?.character_id ?? 1); setDeckEditorOpen(true); }}>构建牌组</button>
+        </div>
+        <button type="button" disabled={!local?.character_id} className={local?.ready ? "ready-active" : ""} onClick={() => send("set_ready", { ready: !local?.ready })}>{local?.ready ? "取消准备" : "准备对局"}<span>→</span></button>
+      </div>
+      {deckEditorOpen && (
+        <div className="modal-backdrop" onClick={() => setDeckEditorOpen(false)} role="presentation">
+          <section className="choice-dialog deck-viewer deck-editor" role="dialog" aria-modal="true" aria-labelledby="deck-editor-title" onClick={(event) => event.stopPropagation()}>
+            <p className="eyebrow">DECK BUILDER</p>
+            <h2 id="deck-editor-title">构建牌组</h2>
+            <p>点卡面放大查看；右下角 当前/默认：左键 +1、右键 -1（最少 0）。{selectedCharacterId === 4 ? "物品与生物由默认配置/区域机制决定，不可修改。" : ""}</p>
+            <div className="deck-editor-tabs">
+              {room.characters.filter((item) => [1, 4].includes(item.character_id)).map((item) => (
+                <button key={item.character_id} type="button" className={selectedCharacterId === item.character_id ? "active" : ""} onClick={() => setDeckEditorCharacter(item.character_id)}>{item.name}</button>
+              ))}
+              <button type="button" className="deck-restore" onClick={restoreDefaultDeck}>恢复默认牌组</button>
+            </div>
+            {groupedEditorCards.length === 0 ? (
+              <p className="muted">该角色暂无卡牌。</p>
+            ) : (
+              groupedEditorCards.map(([type, cards]) => (
+                <section key={type} className="deck-group">
+                  <h3>{type} · {cards.length}</h3>
+                  <div className="deck-grid">
+                    {cards.map((card) => {
+                      const current = currentDeck[card.card_id] ?? 0;
+                      const defaultValue = editorDefaults[card.card_id] ?? 0;
+                      return (
+                        <div key={card.card_id} className="deck-edit-card">
+                          <button
+                            type="button"
+                            className="deck-card-button"
+                            title="点击放大查看"
+                            onClick={() => setPreviewedCard(card)}
+                            onContextMenu={(event) => { event.preventDefault(); setPreviewedCard(card); }}
+                          >
+                            <GameCard card={card} characterId={selectedCharacterId ?? 1} cardId={card.card_id} cost={card.cost} index={card.card_id - 1} discardState="none" />
+                          </button>
+                          <button
+                            type="button"
+                            className="deck-count-badge"
+                            title="左键 +1，右键 -1"
+                            onClick={() => setDeckCount(card.card_id, current + 1)}
+                            onContextMenu={(event) => { event.preventDefault(); setDeckCount(card.card_id, current - 1); }}
+                          >
+                            {current}<i>/{defaultValue}</i>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))
+            )}
+          </section>
+        </div>
+      )}
+      {previewedCard && (
+        <div className="modal-backdrop card-preview-backdrop" onClick={() => setPreviewedCard(null)} role="presentation">
+          <div className="card-preview" onClick={(event) => event.stopPropagation()}>
+            <div className="card-preview-card">
+              <GameCard card={previewedCard} characterId={selectedCharacterId ?? 1} cardId={previewedCard.card_id} cost={previewedCard.cost} index={previewedCard.card_id - 1} discardState="none" />
+            </div>
+            <button type="button" className="card-preview-close" onClick={() => setPreviewedCard(null)}>关闭</button>
+          </div>
+        </div>
+      )}
       {props.children}
     </main>
   );

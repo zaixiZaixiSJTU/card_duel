@@ -59,6 +59,7 @@ class PlayerSlot:
     client_id: str
     character_id: int | None = None
     ready: bool = False
+    deck_counts: dict[int, dict[int, int]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -113,12 +114,15 @@ class Room:
         )
         combat = CombatEngine(state, registry)
         combat.initialize_players()
+        self._apply_configured_slugcat_pools(state, character_ids)
 
         zones: dict[int, CardZone] = {}
         for player_id, character_id in character_ids.items():
             if character_id is None:  # Narrowed by validation above.
                 raise RuntimeError("角色状态在开局时意外丢失")
-            deck_counts = registry.get_deck_counts(character_id)
+            deck_counts = self._deck_counts_for_slot(
+                self.players[player_id], character_id, registry
+            )
             last_card_id = max(deck_counts, default=0)
             player_seed = (seed ^ ((player_id * 0x9E3779B1) & 0x7FFFFFFF)) % (2**31)
             deck = build_shuffled_deck(
@@ -137,6 +141,69 @@ class Room:
         log = begin_turn(self, first_player_id, registry)
         self.revision += 1
         return log
+
+    def _deck_counts_for_slot(
+        self, slot: PlayerSlot, character_id: int, registry: CardRegistry
+    ) -> dict[int, int]:
+        configured = slot.deck_counts.get(character_id)
+        if configured is None:
+            return registry.get_deck_counts(character_id)
+        if character_id == 4:
+            from card_duel.cards.slugcat.specs import SLUGCAT_SPECS_BY_ID
+
+            defaults = registry.get_deck_counts(character_id)
+            skill_counts = (
+                {
+                    card_id: count
+                    for card_id, count in configured.items()
+                    if SLUGCAT_SPECS_BY_ID.get(card_id) is not None
+                    and SLUGCAT_SPECS_BY_ID[card_id].card_type == "技能"
+                }
+                if configured is not None
+                else {
+                    card_id: count
+                    for card_id, count in defaults.items()
+                    if SLUGCAT_SPECS_BY_ID.get(card_id) is not None
+                    and SLUGCAT_SPECS_BY_ID[card_id].card_type == "技能"
+                }
+            )
+            item_counts = {
+                card_id: count
+                for card_id, count in defaults.items()
+                if SLUGCAT_SPECS_BY_ID.get(card_id) is not None
+                and SLUGCAT_SPECS_BY_ID[card_id].card_type == "物品"
+            }
+            return {**skill_counts, **item_counts}
+        return configured
+
+    def _apply_configured_slugcat_pools(
+        self, state: GameState, character_ids: dict[int, int | None]
+    ) -> None:
+        """把构建牌组中的见闻/形态数量写入各自的堆（生物保持默认）。"""
+        from card_duel.cards.slugcat.specs import (
+            SLUGCAT_DISCOVERY_IDS,
+            SLUGCAT_FORM_IDS,
+        )
+        from card_duel.cards.slugcat.state import slugcat_data
+
+        for player_id, character_id in character_ids.items():
+            if character_id != 4:
+                continue
+            configured = self.players[player_id].deck_counts.get(character_id)
+            if configured is None:
+                continue
+            data = slugcat_data(state.players[player_id])
+            data.discovery_pool = [
+                card_id
+                for card_id, count in configured.items()
+                if card_id in SLUGCAT_DISCOVERY_IDS
+                for _ in range(max(0, count))
+            ]
+            data.form_copies = {
+                card_id: count
+                for card_id, count in configured.items()
+                if card_id in SLUGCAT_FORM_IDS and count > 0
+            }
 
 
 @dataclass(slots=True)
@@ -197,6 +264,7 @@ class RoomManager:
         self, connection: ClientConnection, action: ClientAction
     ) -> list[Delivery]:
         handlers = {
+            "configure_character_deck": self._configure_character_deck,
             "create_room": self._create_room,
             "join_room": self._join_room,
             "select_character": self._select_character,
@@ -264,15 +332,66 @@ class RoomManager:
             *self._room_state_deliveries(room),
         ]
 
+    def _configure_character_deck(
+        self, connection: ClientConnection, data: dict[str, Any]
+    ) -> list[Delivery]:
+        room, slot = self._require_lobby_player(connection)
+        if slot.ready:
+            raise ActionError("ready_locked", "已准备，请先取消准备再修改牌组")
+        character_id = _required_int(data, "character_id")
+        if character_id not in self.registry.character_ids:
+            raise ActionError("invalid_character", "角色不存在")
+        raw_counts = data.get("deck_counts")
+        if not isinstance(raw_counts, dict):
+            raise ActionError("invalid_deck", "deck_counts 必须是对象")
+        catalog_ids = {
+            definition.card_id for definition in self.registry.get_catalog(character_id)
+        }
+        counts = {}
+        for raw_card_id, raw_count in raw_counts.items():
+            try:
+                card_id = int(raw_card_id)
+            except (TypeError, ValueError):
+                raise ActionError("invalid_deck", "卡牌编号必须是整数")
+            if isinstance(card_id, bool):
+                raise ActionError("invalid_deck", "卡牌编号必须是整数")
+            if (
+                isinstance(raw_count, bool)
+                or not isinstance(raw_count, int)
+                or not 0 <= raw_count <= 99
+            ):
+                raise ActionError("invalid_deck", "卡牌数量必须是 0 到 99 的整数")
+            if card_id not in catalog_ids:
+                raise ActionError("invalid_deck", f"卡牌 {card_id} 不属于该角色")
+            counts[card_id] = raw_count
+        if character_id == 4:
+            # 蛞蝓猫物品/生物由默认牌组与区域机制决定，不参与构建。
+            from card_duel.cards.slugcat.specs import SLUGCAT_SPECS_BY_ID
+
+            counts = {
+                card_id: count
+                for card_id, count in counts.items()
+                if SLUGCAT_SPECS_BY_ID.get(card_id) is not None
+                and SLUGCAT_SPECS_BY_ID[card_id].card_type
+                not in {"物品", "生物"}
+            }
+        if not any(counts.get(card_id) for card_id in catalog_ids):
+            raise ActionError("invalid_deck", "牌组至少需要一张可抽的卡牌")
+        slot.deck_counts[character_id] = counts
+        # 准备是纯玩家自己的行为：改牌组不取消任何人的准备。
+        return self._room_state_deliveries(room)
+
     def _select_character(
         self, connection: ClientConnection, data: dict[str, Any]
     ) -> list[Delivery]:
         room, slot = self._require_lobby_player(connection)
+        if slot.ready:
+            raise ActionError("ready_locked", "已准备，请先取消准备再更换角色")
         character_id = _required_int(data, "character_id")
         if character_id not in self.registry.character_ids:
             raise ActionError("invalid_character", "角色不存在")
         slot.character_id = character_id
-        self._reset_readiness(room)
+        # 准备是纯玩家自己的行为：选角不取消任何人的准备。
         return self._room_state_deliveries(room)
 
     def _configure_room(
@@ -666,6 +785,38 @@ class RoomManager:
             }
             for character_id in self.registry.character_ids
         ]
+        catalogs = {
+            str(character_id): [
+                {
+                    "card_id": definition.card_id,
+                    "name": definition.name,
+                    "card_type": definition.card_type,
+                    "cost": definition.cost,
+                    "description": definition.description,
+                    "exhausted": definition.exhausted,
+                }
+                for definition in self.registry.get_catalog(character_id)
+                if definition.card_id != 0
+            ]
+            for character_id in self.registry.character_ids
+        }
+        default_deck_counts = {}
+        for character_id in self.registry.character_ids:
+            counts = dict(self.registry.get_deck_counts(character_id))
+            if character_id == 4:
+                from card_duel.cards.slugcat.specs import (
+                    SLUGCAT_CARD_SPECS,
+                    SLUGCAT_CREATURE_IDS,
+                )
+
+                counts[27] = 1  # 见闻堆默认初始一张工业郊区
+                for spec in SLUGCAT_CARD_SPECS:
+                    if (
+                        spec.card_id in SLUGCAT_CREATURE_IDS
+                        and spec.source_count > 0
+                    ):
+                        counts[spec.card_id] = spec.source_count
+            default_deck_counts[str(character_id)] = counts
         return {
             "room_code": room.code,
             "status": room.status,
@@ -675,10 +826,15 @@ class RoomManager:
                     "player_id": slot.player_id,
                     "character_id": slot.character_id,
                     "ready": slot.ready,
+                    "deck_counts": {
+                        str(key): value for key, value in slot.deck_counts.items()
+                    },
                 }
                 for slot in room.players.values()
             ],
             "characters": characters,
+            "catalogs": catalogs,
+            "default_deck_counts": default_deck_counts,
         }
 
     def _match_view(

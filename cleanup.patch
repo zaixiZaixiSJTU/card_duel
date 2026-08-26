@@ -1,0 +1,6 @@
+*** Begin Patch
+*** Update File: card_duel/web/rooms.py
+@@
+-            "create_room": self._create_room,
++            "create_room": self._create_room,
+*** End Patch

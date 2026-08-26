@@ -218,6 +218,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .player-slot.ready { border-color: #d7ff3f55; }
 .player-slot.ready i { color: var(--acid); }
 .lobby-sidebar { display: flex; flex-direction: column; gap: 14px; }
+.lobby-sidebar .log-panel { position: static; width: 100%; height: min(var(--chat-height), 300px); }
 .rules-panel { padding: 20px; border: 1px solid var(--line); background: #171c17; }
 .rules-panel .panel-heading { margin-bottom: 22px; }
 .rules-panel > label:not(.toggle-row), .rules-panel > .rule-label { display: block; margin: 17px 0 7px; color: var(--muted); font-size: 10px; }
@@ -237,6 +238,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .secondary-action:hover { background: rgba(204, 255, 0, 0.15); border-color: var(--acid); transform: translateY(-1px); }
 .lobby-ready-bar { position: fixed; z-index: 10; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between; align-items: center; padding: 20px clamp(20px, 4vw, 64px); background: rgba(20, 24, 20, 0.85); border-top: 1px solid rgba(255,255,255,0.08); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 -10px 40px rgba(0,0,0,0.5); }
 .lobby-ready-bar p { margin: 0; color: var(--muted); font-size: 12px; }
+.lobby-ready-left { display: flex; align-items: center; gap: 16px; }
+.deck-builder-toggle { padding: 10px 16px; color: var(--ink); border: 1px solid rgba(255,255,255,0.15); border-radius: var(--radius-sm); background: rgba(255,255,255,0.04); font-weight: 700; cursor: pointer; transition: border-color .2s, background .2s; }
+.deck-builder-toggle:hover { border-color: var(--acid); background: rgba(215,255,63,0.08); }
 .lobby-ready-bar button { min-width: 220px; display: flex; justify-content: space-between; padding: 16px 20px; border: 0; border-radius: var(--radius-sm); color: var(--night); background: var(--acid); font-weight: 800; cursor: pointer; transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1); box-shadow: 0 4px 16px rgba(204, 255, 0, 0.2); }
 .lobby-ready-bar button:hover { transform: translateY(-2px); box-shadow: 0 6px 24px rgba(204, 255, 0, 0.3); background: #dfff4d; }
 .lobby-ready-bar button.ready-active { color: var(--ink); border: 1px solid var(--ember); background: rgba(255, 85, 51, 0.15); box-shadow: none; }
@@ -438,18 +442,28 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .codex-viewer { width: min(1180px, calc(100vw - 48px)); }
 .deck-group + .deck-group { margin-top: 22px; padding-top: 18px; border-top: 1px solid rgba(255,255,255,0.07); }
 .deck-group h3 { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; margin: 0 0 12px; padding: 8px 10px; color: var(--acid); font-size: calc(12px * var(--ui-scale)); letter-spacing: .06em; background: rgba(22, 27, 22, 0.94); backdrop-filter: blur(6px); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; }
-.deck-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(calc(var(--card-width) * 0.92), 1fr)); gap: calc(12px * var(--ui-scale)); align-items: start; }
+.deck-grid { display: grid; grid-template-columns: repeat(3, calc(var(--card-width) * 0.92)); gap: calc(12px * var(--ui-scale)); align-items: start; justify-content: start; }
 .deck-card-button { display: block; min-width: 0; padding: 0; border: 1px solid #3d3d45; border-radius: 7px; background: none; cursor: zoom-in; transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease; }
 .deck-card-button:hover { transform: translateY(-3px); border-color: var(--acid); box-shadow: 0 10px 26px rgba(0,0,0,.5); }
-.deck-card-button .game-card { height: calc(var(--card-height) * 0.76); border-radius: 6px; box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 6px 18px rgba(0,0,0,.45); }
+.deck-card-button .game-card { height: calc(var(--card-height) * 0.92); border-radius: 6px; box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 6px 18px rgba(0,0,0,.45); }
 .deck-card-button .card-top { padding: calc(6px * var(--ui-scale)); }
 .deck-card-button .card-copy { padding: calc(7px * var(--ui-scale)); }
 .deck-card-button .card-copy strong { font-size: calc(12px * var(--ui-scale)); margin-bottom: 3px; }
 .deck-card-button .unlock-condition { position: static; display: block; margin: 0 0 4px; max-width: none; font-size: calc(7.5px * var(--ui-scale)); line-height: 1.35; }
-.deck-card-button .card-copy p { height: calc(var(--card-width) * 0.28); font-size: calc(9px * var(--ui-scale)); line-height: 1.4; text-align: left; color: #c9d2c2; }
-.deck-card-button .card-art-image, .deck-card-button .card-art { height: calc(var(--card-width) * 0.46); flex-shrink: 0; }
+.deck-card-button .card-copy p { height: calc(var(--card-height) * 0.25); font-size: calc(9px * var(--ui-scale)); line-height: 1.4; text-align: left; color: #c9d2c2; }
+.deck-card-button .card-art-image, .deck-card-button .card-art { height: calc(var(--card-height) * 0.42); flex-shrink: 0; }
 .deck-card-button .game-card > small { font-size: calc(7px * var(--ui-scale)); }
 .deck-card-button .stack-count-badge { right: 6px; bottom: 18px; min-width: 24px; padding: 3px 6px; font-size: calc(11px * var(--ui-scale)); }
+.deck-editor-tabs { display: flex; align-items: center; gap: 8px; margin: 14px 0 4px; flex-wrap: wrap; }
+.deck-editor-tabs button { padding: 9px 18px; color: var(--muted); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; background: rgba(0,0,0,0.25); font-weight: 700; cursor: pointer; transition: all .2s; }
+.deck-editor-tabs button.active { color: var(--night); background: var(--acid); border-color: var(--acid); }
+.deck-editor-tabs .deck-restore { margin-left: auto; color: var(--ink); border-color: var(--ember); background: rgba(191,84,84,0.12); }
+.deck-editor-tabs .deck-restore:hover { background: rgba(191,84,84,0.25); }
+.deck-edit-card { position: relative; }
+.deck-edit-card .deck-card-button { width: 100%; }
+.deck-count-badge { position: absolute; right: 6px; bottom: 6px; z-index: 6; display: inline-flex; align-items: baseline; gap: 3px; min-width: 44px; justify-content: center; padding: 5px 8px; color: var(--night); border: 0; border-radius: 999px; background: var(--acid); font: 900 15px ui-monospace, monospace; box-shadow: 0 4px 12px rgba(0,0,0,.6); cursor: pointer; transition: background .15s, transform .15s; }
+.deck-count-badge:hover { background: #dfff4d; transform: translateY(-1px); }
+.deck-count-badge i { font: normal 700 10px ui-monospace, monospace; opacity: .75; }
 .stack-count-badge { position: absolute; right: 8px; bottom: 26px; display: inline-flex; align-items: center; justify-content: center; min-width: 30px; padding: 5px 8px; color: var(--night); border: 2px solid #ffffff33; border-radius: 999px; background: var(--acid); font: 900 14px ui-monospace, monospace; box-shadow: 0 6px 16px rgba(0,0,0,.55); z-index: 5; }
 .modal-backdrop.card-preview-backdrop { z-index: 100; display: flex; overflow: auto; padding: 28px; }
 .card-preview { position: relative; display: flex; flex-direction: column; align-items: center; gap: 14px; margin: auto; width: fit-content; max-width: 92vw; }
@@ -457,7 +471,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   width: calc(var(--card-width) * var(--enlarge-scale, 1.25));
   height: calc(var(--card-height) * var(--enlarge-scale, 1.25));
 }
-.card-preview-card .game-card { transform: scale(var(--enlarge-scale, 1.25)); transform-origin: center; }
+.card-preview-card .game-card { width: var(--card-width); height: var(--card-height); transform: scale(var(--enlarge-scale, 1.25)); transform-origin: center; }
 .card-preview-close { width: auto; height: auto; padding: 10px 26px; color: var(--night); border: 0; border-radius: 8px; background: var(--acid); font-weight: 800; cursor: pointer; transition: background .2s; }
 .card-preview-close:hover { background: #dfff4d; }
 .pile-button { display: block; width: 100%; padding: 10px 12px; border: 1px solid #3a4137; border-radius: 8px; background: #121612cc; cursor: pointer; transition: border-color .2s, transform .2s, box-shadow .2s; }

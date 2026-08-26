@@ -114,6 +114,189 @@ class RoomManagerTests(unittest.IsolatedAsyncioTestCase):
         error = self.guest.pop("error")
         self.assertEqual(error["data"]["code"], "host_only")
 
+    async def test_custom_deck_is_used_when_match_starts(self):
+        code = await self.create_and_join()
+        await self.manager.handle(
+            self.host_id,
+            {"action": "select_character", "data": {"character_id": 1}},
+        )
+        self.host.pop("room_state")
+        self.guest.pop("room_state")
+
+        custom = {
+            1: 10,
+            2: 0,
+            3: 0,
+            4: 0,
+            5: 0,
+            6: 0,
+            7: 0,
+            8: 0,
+            9: 0,
+            10: 0,
+            11: 0,
+            12: 0,
+            13: 0,
+            14: 0,
+            15: 0,
+            16: 0,
+        }
+        await self.manager.handle(
+            self.host_id,
+            {
+                "action": "configure_character_deck",
+                "data": {"character_id": 1, "deck_counts": custom},
+            },
+        )
+        self.host.pop("room_state")
+        self.guest.pop("room_state")
+
+        await self.manager.handle(
+            self.guest_id,
+            {"action": "select_character", "data": {"character_id": 1}},
+        )
+        self.host.pop("room_state")
+        self.guest.pop("room_state")
+        await self.manager.handle(
+            self.host_id, {"action": "set_ready", "data": {"ready": True}}
+        )
+        self.host.pop("room_state")
+        self.guest.pop("room_state")
+        await self.manager.handle(
+            self.guest_id, {"action": "set_ready", "data": {"ready": True}}
+        )
+        self.host.pop("match_started")
+        self.guest.pop("match_started")
+
+        room = self.manager.rooms[code]
+        host_cards = (
+            room.card_zones[1].hand
+            + room.card_zones[1].draw_pile
+            + room.card_zones[1].discard_pile
+        )
+        self.assertEqual(len(host_cards), 10)
+        self.assertTrue(all(card_id == 1 for card_id in host_cards))
+        # 客机未配置，使用默认牌组
+        self.assertGreater(
+            len(room.card_zones[2].hand) + len(room.card_zones[2].draw_pile),
+            10,
+        )
+
+    async def test_deck_change_is_rejected_while_ready(self):
+        code = await self.create_and_join()
+        for client_id in (self.host_id, self.guest_id):
+            await self.manager.handle(
+                client_id,
+                {"action": "select_character", "data": {"character_id": 1}},
+            )
+            self.host.pop("room_state")
+            self.guest.pop("room_state")
+
+        custom = {1: 10, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0}
+        await self.manager.handle(
+            self.host_id, {"action": "set_ready", "data": {"ready": True}}
+        )
+        self.host.pop("room_state")
+        self.guest.pop("room_state")
+
+        # 已准备时不允许修改牌组
+        await self.manager.handle(
+            self.host_id,
+            {
+                "action": "configure_character_deck",
+                "data": {"character_id": 1, "deck_counts": custom},
+            },
+        )
+        error = self.host.pop("error")
+        self.assertEqual(error["data"]["code"], "ready_locked")
+
+    async def test_character_change_is_rejected_while_ready(self):
+        code = await self.create_and_join()
+        for client_id in (self.host_id, self.guest_id):
+            await self.manager.handle(
+                client_id,
+                {"action": "select_character", "data": {"character_id": 1}},
+            )
+            self.host.pop("room_state")
+            self.guest.pop("room_state")
+
+        await self.manager.handle(
+            self.guest_id, {"action": "set_ready", "data": {"ready": True}}
+        )
+        self.host.pop("room_state")
+        self.guest.pop("room_state")
+
+        # 已准备时不允许更换角色
+        await self.manager.handle(
+            self.guest_id,
+            {"action": "select_character", "data": {"character_id": 1}},
+        )
+        error = self.guest.pop("error")
+        self.assertEqual(error["data"]["code"], "ready_locked")
+
+    async def test_slugcat_custom_deck_configures_each_pool(self):
+        code = await self.create_and_join()
+        await self.manager.handle(
+            self.host_id,
+            {"action": "select_character", "data": {"character_id": 4}},
+        )
+        self.host.pop("room_state")
+        self.guest.pop("room_state")
+
+        from card_duel.cards.catalog import DEFAULT_REGISTRY
+
+        catalog_ids = [
+            definition.card_id
+            for definition in DEFAULT_REGISTRY.get_catalog(4)
+        ]
+        custom = {card_id: 0 for card_id in catalog_ids}
+        custom[6] = 2  # 技能
+        custom[44] = 1  # 物品
+        custom[27] = 3  # 见闻
+        custom[16] = 5  # 生物
+        custom[36] = 2  # 形态
+        await self.manager.handle(
+            self.host_id,
+            {
+                "action": "configure_character_deck",
+                "data": {"character_id": 4, "deck_counts": custom},
+            },
+        )
+        self.host.pop("room_state")
+        self.guest.pop("room_state")
+        await self.manager.handle(
+            self.guest_id,
+            {"action": "select_character", "data": {"character_id": 1}},
+        )
+        self.host.pop("room_state")
+        self.guest.pop("room_state")
+        await self.manager.handle(
+            self.host_id, {"action": "set_ready", "data": {"ready": True}}
+        )
+        self.host.pop("room_state")
+        self.guest.pop("room_state")
+        await self.manager.handle(
+            self.guest_id, {"action": "set_ready", "data": {"ready": True}}
+        )
+        self.host.pop("match_started")
+        self.guest.pop("match_started")
+
+        room = self.manager.rooms[code]
+        from card_duel.cards.slugcat.state import slugcat_data
+
+        data = slugcat_data(room.state.players[1])
+        self.assertEqual(data.discovery_pool, [27, 27, 27])
+        self.assertEqual(data.form_copies, {36: 2})
+        # 生物保持默认池、物品保持默认牌组，不受构建影响
+        self.assertEqual(data.unlocked_creature_counts, {16: 2, 20: 3, 25: 3})
+        host_cards = room.card_zones[1].hand + room.card_zones[1].draw_pile
+        self.assertEqual(len(host_cards), 26)
+        self.assertNotIn(16, host_cards)
+        self.assertNotIn(27, host_cards)
+        self.assertNotIn(36, host_cards)
+        self.assertIn(6, host_cards)
+        self.assertIn(1, host_cards)  # 默认钢筋仍在
+
     async def test_both_ready_start_match_with_private_card_views(self):
         code = await self.create_and_join()
         await self.manager.handle(
