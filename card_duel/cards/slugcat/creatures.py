@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from card_duel.cards.slugcat.specs import (
     CREATURE_BASE_HEALTH,
     SLUGCAT_CHARACTER_ID,
+    SLUGCAT_SPEAR_IDS,
     SLUGCAT_SPECS_BY_ID,
 )
 from card_duel.cards.slugcat.state import SlugcatData
@@ -255,38 +256,40 @@ def resolve_attack(
     target = next((item for item in targets if item.label == selected), targets[0])
     if target.zone == "player":
         player = context.state.players[target.player_id]
-        hp_before = player.health
         total, agility_consumed, life_loss = context.combat.apply_damage_with_report(
             damage, target.player_id, None
         )
-        blocked_round1 = (
-            context.state.round1_no_damage
-            and context.state.round_number == 1
-            and context.state.first_player_id == context.source_player_id
-        )
-        shown_loss = life_loss
-        if blocked_round1:
-            # 先手方第一回合不扣血：结算后把后手方血量恢复为攻击前，
-            # 插入/弃牌等其它效果照常保留。
-            player.health = hp_before
-            shown_loss = 0
         context.announce(
             f"玩家{context.source_player_id}使用{card_name}攻击{target.label}"
-            f"（总伤害{total}，扣敏捷{agility_consumed}，实际扣血{shown_loss}）"
+            f"（总伤害{total}，扣敏捷{agility_consumed}，实际扣血{life_loss}）"
         )
         if life_loss > 0 and on_player_penetrate is not None:
             on_player_penetrate(context)
-        if blocked_round1:
-            context.announce("先手方第一回合无法造成生命损失（血量已恢复）")
-        return shown_loss
+        return life_loss
     context.announce(f"玩家{context.source_player_id}使用{card_name}攻击{target.label}")
-    damage_creature(
+    # 先存生物引用：damage_creature 可能在生物被击杀时将其从 zone 移除，
+    # 届时 creature_ref.health <= 0，用于判断是否还要施加穿透的持续效果。
+    statuses = context.state.players[target.player_id].statuses
+    zone = statuses.creature_threats if target.zone == "threat" else statuses.hand_creatures
+    creature_ref = next((item for item in zone if item.card_id == target.card_id), None)
+    dealt = damage_creature(
         context,
         target.player_id,
         target.card_id,
         damage,
         threat=target.zone == "threat",
     )
+    # 矛类穿透效果对生物同样生效，但持续效果（钢筋流血/电矛减伤）只在生物
+    # 存活时挂载：被一击必杀的生物不会再攻击，挂上去也无意义。炸矛的额外
+    # 10伤同样仅在生物存活时才有意义。target（AttackTarget）携带 zone/player_id/
+    # card_id，penetrate 函数据此定位具体生物实例修改其字段。
+    if (
+        dealt > 0
+        and on_player_penetrate is not None
+        and creature_ref is not None
+        and creature_ref.health > 0
+    ):
+        on_player_penetrate(context, target=target)
     return 0
 
 
@@ -302,11 +305,11 @@ def damage_creature(
     zone = statuses.creature_threats if threat else statuses.hand_creatures
     creature = next((item for item in zone if item.card_id == card_id), None)
     if creature is None:
-        return False
+        return 0
     if card_id == 17 and not statuses.noodle_fly_immunity_used:
         statuses.noodle_fly_immunity_used = True
         context.announce("面条蝇免疫了本次攻击")
-        return False
+        return 0
 
     if card_id == 22:
         lost = _reduce_centipede_health(context.state, damage)
@@ -315,23 +318,26 @@ def damage_creature(
             f"（剩余{centipede_health(context.state)}）"
         )
         if centipede_health(context.state) > 0:
-            return False
+            return lost
         zone.remove(creature)
+        _track_attacker_kills(context, card_id)
         _kill_centipede(context, player_id, creature)
-        return True
+        return lost
 
-    creature.health -= max(0, damage)
+    actual = min(max(0, damage), creature.health)
+    creature.health -= actual
     context.announce(
-        f"对{SLUGCAT_SPECS_BY_ID[card_id].name}造成{damage}点伤害"
+        f"对{SLUGCAT_SPECS_BY_ID[card_id].name}造成{actual}点伤害"
         f"（剩余{max(0, creature.health)}）"
     )
     if card_id == 23:
         context.combat.apply_damage(3, context.source_player_id, context.announce)
         context.announce(f"烈焰蜥蜴反伤玩家{context.source_player_id}3点伤害")
     if creature.health > 0:
-        return False
+        return actual
 
     zone.remove(creature)
+    _track_attacker_kills(context, card_id)
     if not threat and state_has_physical_creature(context.state, player_id):
         _remove_physical_or_queue(context.state, player_id, card_id)
     on_creature_death(
@@ -341,7 +347,25 @@ def damage_creature(
         context.announce,
         private_announce=context.private_announce,
     )
-    return True
+    return actual
+
+
+def _track_attacker_kills(context, card_id: int) -> None:
+    """Record spear/scavenger kills on the attacker for form unlocks."""
+    attacker = context.state.players[context.source_player_id]
+    data = attacker.character_data
+    if not isinstance(data, SlugcatData):
+        return
+    from card_duel.cards.slugcat.abilities import unlock_ability_card
+
+    if data.last_card_id in SLUGCAT_SPEAR_IDS:
+        data.spear_kill_types.add(data.last_card_id)
+        if len(data.spear_kill_types) >= 3:
+            unlock_ability_card(attacker, 36, announce=context.announce)
+    if card_id == 25:
+        data.scavenger_kills += 1
+        if data.scavenger_kills >= 5:
+            unlock_ability_card(attacker, 56, announce=context.announce)
 
 
 def _kill_centipede(context, player_id: int, creature: CreatureState) -> None:
@@ -399,9 +423,10 @@ def on_creature_death(
         else:
             statuses.pending_hand_additions.append(item)
         announce("拾荒者掉落了携带的物品")
-        (private_announce or announce)(
-            f"获得物品：{SLUGCAT_SPECS_BY_ID[item].name}（仅自己可见）"
-        )
+        if private_announce is not None:
+            private_announce(f"获得物品：{SLUGCAT_SPECS_BY_ID[item].name}（仅自己可见）")
+        else:
+            announce(f"获得物品：{SLUGCAT_SPECS_BY_ID[item].name}（仅自己可见）")
 
     if card_id == 25 and isinstance(
         state.players[player_id].character_data, SlugcatData
@@ -498,6 +523,7 @@ def kill_matching_creature(context, card_id: int) -> bool:
     )
     creature = next(item for item in zone if item.card_id == card_id)
     zone.remove(creature)
+    _track_attacker_kills(context, card_id)
     if card_id == 22:
         _remove_all_centipede_segments(context.state)
         if context.announce:

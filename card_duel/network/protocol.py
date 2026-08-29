@@ -135,6 +135,7 @@ def send_game_state(session) -> None:
         str(player_id): {
             "energy": player.energy,
             "health": player.health,
+            "max_health": player.max_health,
             "strength": player.strength,
             "poison": player.poison,
             "statuses": _dataclass_payload(player.statuses),
@@ -193,6 +194,7 @@ def _apply_state_message(session, message) -> None:
         values = player_payloads[str(player_id)]
         player.energy = values["energy"]
         player.health = values["health"]
+        player.max_health = values.get("max_health", player.max_health)
         player.strength = values["strength"]
         player.poison = values["poison"]
         _apply_dataclass_values(player.statuses, values["statuses"])
@@ -271,6 +273,8 @@ def _apply_local_pending_actions(session) -> None:
 
     state.hand_cards.extend(statuses.pending_hand_additions)
     statuses.pending_hand_additions.clear()
+    state.draw_pile.extend(statuses.pending_draw_additions)
+    statuses.pending_draw_additions.clear()
     for card_id in statuses.pending_hand_removals:
         with suppress(ValueError):
             state.hand_cards.remove(card_id)
@@ -325,6 +329,7 @@ def _clear_transient_queues(state) -> None:
         player.statuses.pending_hand_additions.clear()
         player.statuses.pending_hand_removals.clear()
         player.statuses.pending_draw_returns.clear()
+        player.statuses.pending_draw_additions.clear()
 
 
 def _dataclass_payload(instance):

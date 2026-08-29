@@ -5,16 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "card-duel"
 version = "0.4.2"
-description = "A two-player card duel game over TCP"
+description = "A two-player card duel game over TCP and WebSocket"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "fastapi>=0.116,<1",
     "FreeSimpleGUI",
     "Pillow",
+    "uvicorn[standard]>=0.35,<1",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "httpx>=0.28",
     "pytest>=8.0",
     "ruff>=0.6",
 ]
@@ -22,6 +25,7 @@ dev = [
 [project.scripts]
 card-duel-host = "card_duel.network.server:main"
 card-duel-join = "card_duel.network.client:main"
+card-duel-web = "card_duel.web.app:main"
 
 [tool.setuptools.packages.find]
 include = ["card_duel*"]

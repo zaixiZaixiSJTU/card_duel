@@ -6,19 +6,27 @@ import random
 
 from card_duel.cards.slugcat.creatures import (
     add_hand_creature,
-    add_threat,
     centipede_health,
     on_creature_death,
     remove_hand_creature,
     resolve_attack,
 )
+from card_duel.cards.slugcat.abilities import unlock_ability_card
 from card_duel.cards.slugcat.hand import count_card
 from card_duel.cards.slugcat.specs import (
     LIZARD_IDS,
     SLUGCAT_NO_DISCARD_IDS,
     SLUGCAT_SPECS_BY_ID,
 )
-from card_duel.cards.slugcat.state import SLUGCAT_HEALTH, SlugcatData, slugcat_data
+from card_duel.core.rules import add_card_to_hand
+from card_duel.cards.slugcat.state import (
+    MAX_SATIETY,
+    SLUGCAT_HEALTH,
+    SlugcatData,
+    gain_satiety,
+    has_form,
+    slugcat_data,
+)
 from card_duel.core.game import TurnPhase
 
 
@@ -27,7 +35,7 @@ class SlugcatRules:
         return SlugcatData()
 
     def initialize(self, player) -> None:
-        player.health = SLUGCAT_HEALTH
+        player.health = player.max_health = SLUGCAT_HEALTH
 
     def register_turn_handlers(self, turn, combat) -> None:
         def on_turn_start(context):
@@ -38,12 +46,43 @@ class SlugcatRules:
                 data.momentum = 0
                 data.redirect_creatures_to_opponent = False
                 data.discovery_discount.clear()
+                if has_form(data, 38):
+                    previous_energy = max(0, data.chaotic_last_energy)
+                    data.momentum += previous_energy * 2
+                    state = context.game_state
+                    # 混沌胃袋"弃1抽1"：由玩家选择弃1张（非随机）。排除生物/
+                    # 插入卡（管虫26、插入卡49/50不可弃）。有可弃卡时设
+                    # forced_discards=1，回合暂停在 TURN_START，由玩家通过红框
+                    # 弃牌交互完成；弃满后 gameplay._resume_chaotic_stomach
+                    # 补抽1张并继续 DRAW/PLAY。无可弃卡时跳过弃/抽。
+                    from card_duel.application.turns import can_discard
+
+                    has_discardable = any(
+                        can_discard(state, context.player_id, card_id)
+                        for card_id in state.hand_cards
+                    )
+                    if has_discardable:
+                        player.statuses.forced_discards = 1
+                        context.announce("混沌胃袋：获得动能，需选择1张弃置（弃后抽1）")
+                    else:
+                        context.announce("混沌胃袋：无牌可弃，获得动能")
+                data.chaotic_last_energy = player.energy
+                if has_form(data, 55):
+                    add_card_to_hand(context.game_state, 61)
+                    context.announce("棘刺信使提供一张骨矛")
+                if has_form(data, 39):
+                    for _ in range(data.lock_layers + 1):
+                        add_card_to_hand(context.game_state, 58)
+                    context.announce("三重肯定提供超度")
                 grass_count = count_card(context.game_state, 42)
                 if grass_count:
-                    data.satiety += grass_count * 2
-                    context.announce(f"蝠蝇草提供{grass_count * 2}点饱食度")
+                    gained = gain_satiety(data, grass_count)
+                    context.announce(f"蝠蝇草提供{gained}点饱食度")
             player.statuses.noodle_fly_immunity_used = False
-            _apply_electric_penalty(player, context.player_id, context.announce)
+            if isinstance(player.character_data, SlugcatData) and has_form(
+                slugcat_data(player), 37
+            ):
+                slugcat_data(player).wave_skill_returned = False
 
         def on_turn_end(context):
             player = context.game_state.players[context.player_id]
@@ -54,10 +93,6 @@ class SlugcatRules:
                 combat,
             )
             _resolve_creatures(context, combat)
-            penalty = player.statuses.electric_strength_penalty
-            if penalty:
-                player.strength += penalty
-                player.statuses.electric_strength_penalty = 0
             if isinstance(player.character_data, SlugcatData):
                 slugcat_data(player).momentum = 0
 
@@ -79,6 +114,15 @@ class SlugcatRules:
     def modify_incoming_damage(self, state, player_id, amount, announce=None):
         if amount <= 0:
             return amount
+        character_data = state.players[player_id].character_data
+        if isinstance(character_data, SlugcatData):
+            if (
+                has_form(character_data, 39)
+                and character_data.lock_layers > 0
+            ):
+                character_data.lock_layers -= 1
+                if announce:
+                    announce(f"玩家{player_id}受伤，三重肯定锁定层数-1")
         statuses = state.players[player_id].statuses
         # 自己一侧（手牌/威胁区）有几张红边体节就免伤几次，双方各自算。
         creature = next(
@@ -115,8 +159,17 @@ class SlugcatRules:
         player = state.players[player_id]
         data = slugcat_data(player)
         data.karma = max(0, data.karma - 1)
+        if data.karma_flower_pending:
+            data.karma_flower_pending = False
+            data.karma = min(data.karma_max, data.karma + 1)
+            announce and announce(f"业力花保护了玩家{player_id}，业力不掉")
+        else:
+            if has_form(data, 52):
+                # 业力花加入自己的物品抽牌堆（非当前行动玩家时经挂起队列写回）。
+                player.statuses.pending_draw_additions.append(51)
+                announce and announce(f"僧侣：业力下降，物品牌堆加入1张业力花")
         if data.karma > 0:
-            player.health = SLUGCAT_HEALTH
+            player.health = player.max_health
             if announce:
                 announce(f"玩家{player_id}消耗1点业力重返雨中（业力{data.karma}）")
         else:
@@ -129,15 +182,34 @@ class SlugcatRules:
 
     def format_status(self, player) -> str:
         data = slugcat_data(player)
-        return f"业力 {data.karma}/{data.karma_max}  ·  饱食 {data.satiety}"
+        return (
+            f"业力 {data.karma}/{data.karma_max}"
+            f"  ·  饱食 {data.satiety}/{MAX_SATIETY}"
+        )
+
+    def unlock_ability(self, player, card_id: int) -> bool:
+        from card_duel.cards.slugcat.abilities import unlock_ability_card
+        return unlock_ability_card(player, card_id)
+
+    def _maybe_unlock(self, player, card_id: int, announce=None):
+        from card_duel.cards.slugcat.abilities import unlock_ability_card
+        unlock_ability_card(player, card_id, announce=announce)
 
 
 def resolve_pending_discards(
-    state, player_id: int, announce=None, on_discard=None
+    state, player_id: int, announce=None, on_discard=None, *, count=None
 ) -> int:
-    """Resolve explosive-spear discards immediately on the affected endpoint."""
+    """Resolve explosive-spear discards immediately on the affected endpoint.
+
+    count=None（默认）按玩家 pending_discards 字段弃牌并写回剩余值；
+    传入正整数则按该数量弃牌且不改动玩家 pending_discards 字段
+    （供混沌胃袋等"强制弃N张"效果复用，避免污染玩家真实弃牌状态）。
+    """
     player = state.players[player_id]
-    pending = player.statuses.pending_discards
+    if count is None:
+        pending = player.statuses.pending_discards
+    else:
+        pending = count
     discarded = 0
     while pending > 0 and state.hand_cards:
         protected = (
@@ -169,7 +241,8 @@ def resolve_pending_discards(
                     state.character_ids[player_id], card_id
                 ).name
             announce(f"随机弃掉：{name}")
-    player.statuses.pending_discards = pending
+    if count is None:
+        player.statuses.pending_discards = pending
     return discarded
 
 
@@ -177,19 +250,9 @@ def _return_discarded_card(state, player_id: int, card_id: int) -> None:
     if 27 <= card_id <= 35 and isinstance(
         state.players[player_id].character_data, SlugcatData
     ):
-        slugcat_data(state.players[player_id]).discovery_pool.append(card_id)
+        slugcat_data(state.players[player_id]).discovery_discard.append(card_id)
     else:
         state.discard_pile.append(card_id)
-
-
-def _apply_electric_penalty(player, player_id: int, announce) -> None:
-    spears = player.statuses.embedded_electric_spears
-    if not spears:
-        return
-    penalty = spears * 2
-    player.strength -= penalty
-    player.statuses.electric_strength_penalty = penalty
-    announce(f"电矛使玩家{player_id}本回合力量-{penalty}")
 
 
 def _resolve_inserted_items(state, player_id: int, announce, combat) -> None:
@@ -214,18 +277,25 @@ def _resolve_creatures(context, combat) -> None:
     # 面条蝇、射线虫引来的秃鹫等）不参与本次结算，留到下个回合结束才出伤。
     damage_creatures = list(statuses.hand_creatures) + list(statuses.creature_threats)
 
-    if any(item.card_id in LIZARD_IDS for item in all_creatures):
-        for noodle in [item for item in statuses.hand_creatures if item.card_id == 16]:
-            remove_hand_creature(state, player_id, 16)
-            on_creature_death(
-                state,
-                player_id,
-                noodle,
-                context.announce,
-                private_announce=context.private_announce,
-            )
-            context.announce("蜥蜴吃掉了小面条，引来面条蝇")
+    # 手牌中的蜥蜴会吃掉小面条：二者一同消失、不触发死亡效果（无面条蝇），
+    # 并解锁僧侣形态（形态卡加入见闻牌堆）。
+    for lizard in [
+        item for item in statuses.hand_creatures if item.card_id in LIZARD_IDS
+    ]:
+        noodle = next(
+            (item for item in statuses.hand_creatures if item.card_id == 16),
+            None,
+        )
+        if noodle is None:
+            break
+        statuses.hand_creatures.remove(lizard)
+        statuses.hand_creatures.remove(noodle)
+        context.announce("蜥蜴吃掉了小面条，二者一同消失")
+        unlock_ability_card(
+            state.players[player_id], 52, announce=context.announce
+        )
 
+    # 没有蜥蜴在场的小面条照常死亡：引来一张面条蝇。
     for noodle in [item for item in statuses.hand_creatures if item.card_id == 16]:
         remove_hand_creature(state, player_id, 16)
         on_creature_death(
@@ -274,6 +344,26 @@ def _resolve_creatures(context, combat) -> None:
             creature, centipede_count, player_id, context.announce
         )
         if damage:
+            # 生物身上的钢筋流血：每根钢筋让生物攻击其所有者时额外造成2点伤害。
+            bleed = creature.embedded_steel_rods * 2
+            if bleed:
+                damage += bleed
+                context.announce(
+                    f"{SLUGCAT_SPECS_BY_ID[creature.card_id].name}因钢筋流血"
+                    f"额外造成{bleed}点伤害"
+                )
+            # 生物身上的电矛：降低该生物本次攻击伤害（与玩家身上的电矛独立）。
+            if creature.electric_weakness > 0:
+                reduced = min(damage, creature.electric_weakness)
+                damage -= reduced
+                context.announce(
+                    f"{SLUGCAT_SPECS_BY_ID[creature.card_id].name}受电矛影响"
+                    f"攻击-{reduced}"
+                )
+            electric = player.statuses.embedded_electric_spears * 2
+            if electric:
+                damage = max(0, damage - electric)
+                context.announce(f"电矛削弱了生物攻击（-{electric}）")
             total, agility_consumed, actual = combat.apply_damage_with_report(
                 damage, player_id, context.announce
             )
@@ -286,8 +376,11 @@ def _resolve_creatures(context, combat) -> None:
                 f"（总伤害{total}，扣敏捷{agility_consumed}，实际扣血{actual}）"
             )
         if creature.card_id == 18 and _creature_still_present(creature, statuses):
-            add_threat(state, player_id, 19, owner_id=player_id)
-            context.announce("射线虫存活至回合结束，引来一张秃鹫")
+            if not creature.vulture_summoned:
+                creature.vulture_summoned = True
+                # 秃鹫加入生物手牌：每次转移（新实例）最多召唤一只，不再每回合重复。
+                add_hand_creature(state, player_id, 19, owner_id=player_id)
+                context.announce("射线虫存活至回合结束，引来一只秃鹫（加入生物手牌）")
 
     _resolve_centipede_spread(state, context.round_number, context.announce)
 

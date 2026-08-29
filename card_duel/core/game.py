@@ -98,6 +98,19 @@ class TurnEngine:
             handler(context)
         return context
 
+    def resume_after(self, phase):
+        """Restore phase progress without replaying already-settled handlers.
+
+        Stateful transports may receive multiple commands during one turn and
+        reconstruct a short-lived ``TurnEngine`` for each command. This method
+        marks the last committed phase so the next ``enter_phase`` call keeps
+        enforcing the normal sequence.
+        """
+        if phase not in PHASE_SEQUENCE:
+            raise ValueError(f"未知阶段：{phase}")
+        self._phase_index = PHASE_SEQUENCE.index(phase)
+        self.current_phase = phase
+
     @property
     def is_complete(self):
         return self.current_phase is TurnPhase.TURN_END

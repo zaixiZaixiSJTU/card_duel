@@ -2,16 +2,19 @@
 
 import math
 import random
+from dataclasses import replace
 
 from card_duel.cards.slugcat.creatures import (
     add_hand_creature,
     add_threat,
+    damage_creature,
     kill_matching_creature,
     remove_all_local_hand_creatures,
     remove_hand_creature,
     return_creature_to_owner_pool,
 )
 from card_duel.cards.slugcat.hand import draw_non_creatures
+from card_duel.cards.slugcat.abilities import unlock_ability_card
 from card_duel.cards.slugcat.specs import (
     DISCOVERY_ADJACENCY,
     DISCOVERY_CONTENTS,
@@ -19,9 +22,18 @@ from card_duel.cards.slugcat.specs import (
     SLUGCAT_ATTACK_ITEM_IDS,
     SLUGCAT_CREATURE_IDS,
     SLUGCAT_DISCOVERY_IDS,
+    SLUGCAT_FORM_IDS,
+    SLUGCAT_SPEAR_IDS,
     SLUGCAT_SPECS_BY_ID,
+    discovery_karma_gain,
 )
-from card_duel.cards.slugcat.state import MAX_KARMA, slugcat_data
+from card_duel.cards.slugcat.state import (
+    MAX_KARMA,
+    MAX_SATIETY,
+    gain_satiety,
+    has_form,
+    slugcat_data,
+)
 from card_duel.core.models import InsertedCardState
 from card_duel.core.rules import add_card_to_hand
 
@@ -46,6 +58,10 @@ def play_card(card_id: int, context):
         return False
     _resolve_action_chain(context, card_id)
     data.last_card_id = card_id
+    if 32 in data.seen_discoveries and data.agility >= 6:
+        unlock_ability_card(context.source, 37, announce=context.announce)
+    if card_id == 47 and 30 in data.seen_discoveries:
+        unlock_ability_card(context.source, 55, announce=context.announce)
     if card_id in SLUGCAT_DISCOVERY_IDS:
         data.discovery_discount[card_id] = data.discovery_discount.get(card_id, 0) + 1
     if card_id not in SLUGCAT_ATTACK_ITEM_IDS and context.source.statuses.attack_lock:
@@ -57,7 +73,7 @@ def _resolve_action_chain(context, card_id: int) -> None:
     data = slugcat_data(context.source)
     if card_id == 6 or not data.jump_followup:
         return
-    if card_id in (1, 2, 4, 5):
+    if card_id in SLUGCAT_ATTACK_ITEM_IDS or card_id in SLUGCAT_SPEAR_IDS:
         data.agility += 1
         context.announce(
             f"玩家{context.source_player_id}借小跳衔接攻击，额外获得1点敏捷"
@@ -109,19 +125,61 @@ def _attack(card_id: int, base_damage: int, on_penetrate=None):
     def effect(context):
         if not _pay_cost(context, card_id):
             return False
-        damage = _attack_with_momentum(context, base_damage)
-        context.combat.resolve_attack(
+        data = slugcat_data(context.source)
+        artisan = has_form(data, 56)
+        penetrate = on_penetrate
+        if artisan and card_id in (5, 61) and data.satiety > 0:
+            data.satiety -= 1
+            context.announce("爆炸工匠：矛视为炸矛")
+            if penetrate is None:
+                penetrate = _insert_explosive_spear
+        damage = base_damage + (
+            2 if card_id in SLUGCAT_SPEAR_IDS and has_form(data, 36) else 0
+        )
+        if card_id == 2 and artisan and data.satiety > 0:
+            data.satiety -= 1
+            damage = 10
+            context.announce("爆炸工匠：石子视为炸弹")
+        data.last_card_id = card_id
+        damage = _attack_with_momentum(context, damage)
+        life_loss = context.combat.resolve_attack(
             context,
             damage,
             SLUGCAT_SPECS_BY_ID[card_id].name,
-            on_penetrate,
+            penetrate,
         )
+        if card_id == 61 and life_loss > 0:
+            gained = gain_satiety(data, 1)
+            context.announce(f"骨矛造成血量损失，饱食+{gained}")
         return True
 
     return effect
 
 
-def _insert_steel_rod(context):
+def _creature_from_target(context, target):
+    """根据 AttackTarget 在对应 zone 中定位具体的 CreatureState。
+
+    生物与玩家是不同个体：矛作用到生物时，弃牌等需要手牌的效果无效，
+    但流血/减伤等持续效果应挂在生物身上，故需拿到生物实例来修改其字段。
+    """
+    if target is None:
+        return None
+    statuses = context.state.players[target.player_id].statuses
+    zone = statuses.creature_threats if target.zone == "threat" else statuses.hand_creatures
+    return next((item for item in zone if item.card_id == target.card_id), None)
+
+
+def _insert_steel_rod(context, target=None):
+    # 目标为生物：钢筋挂载到生物身上触发持续流血，不再进入玩家手牌。
+    creature = _creature_from_target(context, target)
+    if creature is not None:
+        creature.embedded_steel_rods += 1
+        context.announce(
+            f"钢筋插入{SLUGCAT_SPECS_BY_ID[creature.card_id].name}，"
+            f"其后续攻击将因流血额外造成{creature.embedded_steel_rods * 2}点伤害"
+        )
+        return
+    # 目标为玩家：钢筋作为实体卡插入玩家手牌，并在其后续回合造成流血。
     context.target.statuses.embedded_steel_rods += 1
     context.target.statuses.inserted_cards.append(
         InsertedCardState(49, context.source_player_id)
@@ -130,7 +188,18 @@ def _insert_steel_rod(context):
     context.announce(f"钢筋插入玩家{context.target_player_id}的手牌")
 
 
-def _insert_explosive_spear(context):
+def _insert_explosive_spear(context, target=None):
+    # 目标为生物：炸矛的10点伤害直接打到生物身上；生物无手牌，弃牌效果无效。
+    if target is not None:
+        damage_creature(
+            context,
+            target.player_id,
+            target.card_id,
+            10,
+            threat=target.zone == "threat",
+        )
+        return
+    # 目标为玩家：失去10点生命并随机弃1张牌。
     context.combat.lose_life(10, context.target_player_id, context.announce)
     context.target.statuses.pending_discards += 1
     context.announce(
@@ -138,7 +207,17 @@ def _insert_explosive_spear(context):
     )
 
 
-def _insert_electric_spear(context):
+def _insert_electric_spear(context, target=None):
+    # 目标为生物：电矛挂载到生物身上降低其后续攻击伤害，不再进入玩家手牌。
+    creature = _creature_from_target(context, target)
+    if creature is not None:
+        creature.electric_weakness += 2
+        context.announce(
+            f"电矛插入{SLUGCAT_SPECS_BY_ID[creature.card_id].name}，"
+            f"其后续攻击伤害降低{creature.electric_weakness}"
+        )
+        return
+    # 目标为玩家：电矛作为实体卡插入玩家手牌，并在其后续回合降低力量。
     context.target.statuses.embedded_electric_spears += 1
     context.target.statuses.inserted_cards.append(
         InsertedCardState(50, context.source_player_id)
@@ -157,11 +236,17 @@ def _queue_hand_card(context, card_id: int) -> None:
 def explosive(context):
     if not _pay_cost(context, 3):
         return False
+    data = slugcat_data(context.source)
+    artisan = has_form(data, 56) and data.satiety > 0
+    if artisan:
+        data.satiety -= 1
+        context.announce("爆炸工匠：炸药不再自伤")
     context.combat.resolve_attack(
         context, 10, SLUGCAT_SPECS_BY_ID[3].name
     )
     context.announce(f"玩家{context.source_player_id}引爆炸药")
-    context.combat.apply_damage(5, context.source_player_id, context.announce)
+    if not artisan:
+        context.combat.apply_damage(5, context.source_player_id, context.announce)
     return True
 
 
@@ -247,11 +332,16 @@ def forage(context):
     if not _pay_cost(context, 13):
         return False
     gained = math.ceil(context.source.statuses.last_dead_creature_health / 5)
-    slugcat_data(context.source).satiety += gained
+    data = slugcat_data(context.source)
+    actual = gain_satiety(data, gained)
     context.source.statuses.last_dead_creature_health = 0
+    if actual > 0:
+        data.forage_satiety_count += 1
+        if data.forage_satiety_count >= 3:
+            unlock_ability_card(context.source, 38, announce=context.announce)
     draw_non_creatures(context.state, 1)
     context.announce(
-        f"玩家{context.source_player_id}觅食，获得{gained}点饱食度并抽1张牌"
+        f"玩家{context.source_player_id}觅食，获得{actual}点饱食度并抽1张牌"
     )
     return True
 
@@ -261,6 +351,13 @@ def run_away(context):
     amount = 0 if context.ignore_cost else context.source.energy
     context.source.energy = 0
     draw_count = max(0, amount - 1)
+    if data.last_run_away_round == context.state.round_number - 1:
+        data.consecutive_run_away_rounds += 1
+    else:
+        data.consecutive_run_away_rounds = 1
+    data.last_run_away_round = context.state.round_number
+    if data.consecutive_run_away_rounds >= 3:
+        unlock_ability_card(context.source, 40, announce=context.announce)
     removed = remove_all_local_hand_creatures(
         context.state, context.source_player_id
     )
@@ -269,6 +366,11 @@ def run_away(context):
         return_creature_to_owner_pool(context.state, creature)
     obtained = 0
     seen = set(data.seen_discoveries)
+    if not data.discovery_pool and data.discovery_discard:
+        # 见闻抽牌堆（discovery_pool）空时，把见闻弃牌堆洗回。
+        random.shuffle(data.discovery_discard)
+        data.discovery_pool.extend(data.discovery_discard)
+        data.discovery_discard.clear()
     for _ in range(draw_count):
         if data.discovery_pool:
             index = next(
@@ -293,6 +395,14 @@ def trouble(context):
     if not _pay_cost(context, 15):
         return False
     data = slugcat_data(context.source)
+    if not data.unlocked_creature_counts and data.creature_discard:
+        # 生物抽牌堆（召唤池）空时，把生物弃牌堆洗回。
+        random.shuffle(data.creature_discard)
+        for creature_id in data.creature_discard:
+            data.unlocked_creature_counts[creature_id] = (
+                data.unlocked_creature_counts.get(creature_id, 0) + 1
+            )
+        data.creature_discard.clear()
     # 按 unlocked_creature_counts 加权随机：count 即为可召唤数量，召唤后 -1，减到 0 删除
     if data.unlocked_creature_counts:
         pool_ids = list(data.unlocked_creature_counts.keys())
@@ -321,7 +431,7 @@ def trouble(context):
         f"{SLUGCAT_SPECS_BY_ID[creature_id].name}加入玩家{destination}手牌，并抽2张牌"
     )
     if creature_id == 25:
-        context.announce(
+        context.announce_private(
             f"拾荒者携带物品：{SLUGCAT_SPECS_BY_ID[creature.held_item].name}"
         )
     return True
@@ -330,12 +440,14 @@ def trouble(context):
 def _creature(card_id: int):
     def effect(context):
         spec = SLUGCAT_SPECS_BY_ID[card_id]
-        if spec.cost is None:
+        data = slugcat_data(context.source)
+        watcher = has_form(data, 40)
+        if not watcher and spec.cost is None:
             context.announce(f"{spec.name}不可主动打出")
             return False
-        if not _pay_cost(context, card_id):
+        if not watcher and not _pay_cost(context, card_id):
             return False
-        if card_id in (16, 18, 24):
+        if watcher or card_id in (16, 18, 24):
             creature = remove_hand_creature(
                 context.state,
                 context.source_player_id,
@@ -355,8 +467,13 @@ def _creature(card_id: int):
                 f"玩家{context.target_player_id}手牌"
             )
         else:
-            # 打出生物 = 躲避：消耗能量后生物离开手牌，回合结束不再造成伤害。
-            remove_hand_creature(context.state, context.source_player_id, card_id)
+            # 打出生物 = 躲避：生物离开手牌，回合结束不再造成伤害；
+            # 未被杀死，进入生物弃牌堆，之后猫闯祸可洗回召唤池。
+            creature = remove_hand_creature(
+                context.state, context.source_player_id, card_id
+            )
+            if creature is not None:
+                data.creature_discard.append(card_id)
             context.announce(f"玩家{context.source_player_id}打出了{spec.name}")
         return True
 
@@ -368,9 +485,20 @@ def _discovery(card_id: int):
         if not _pay_cost(context, card_id):
             return False
         data = slugcat_data(context.source)
+        first_growth = not data.has_grown_karma
         if card_id not in data.seen_discoveries:
             data.seen_discoveries.append(card_id)
-            data.karma_max = min(MAX_KARMA, data.karma_max + 1)
+            karma_gain = discovery_karma_gain(card_id, first_growth)
+            if karma_gain:
+                actual = min(karma_gain, MAX_KARMA - data.karma_max)
+                if actual > 0:
+                    data.karma_max += actual
+                    data.has_grown_karma = True
+                    context.announce(f"业力上限提升{actual}点")
+                if data.karma_max >= MAX_KARMA:
+                    unlock_ability_card(
+                        context.source, 39, announce=context.announce
+                    )
         context.state.draw_pile[:] = [
             item
             for item in context.state.draw_pile
@@ -477,8 +605,8 @@ def flash_fruit(context):
 def blue_fruit(context):
     if not _pay_cost(context, 44):
         return False
-    slugcat_data(context.source).satiety += 1
-    context.announce(f"玩家{context.source_player_id}吃下蓝果，饱食度+1")
+    gained = gain_satiety(slugcat_data(context.source), 1)
+    context.announce(f"玩家{context.source_player_id}吃下蓝果，饱食度+{gained}")
     return True
 
 
@@ -493,9 +621,11 @@ def bubble_fruit(context):
     if mode is None:
         return False
     if mode == "fruit":
-        data.satiety += 1
-        context.announce(f"玩家{context.source_player_id}把泡水果当作蓝果")
+        gained = gain_satiety(data, 1)
+        context.announce(f"玩家{context.source_player_id}把泡水果当作蓝果，饱食度+{gained}")
         return True
+    if not _pay_cost(context, 45):
+        return False
     damage = _attack_with_momentum(context, 1)
     context.combat.resolve_attack(context, damage, "泡水果（石子）")
     return True
@@ -553,6 +683,40 @@ def mass_battery(context):
     return True
 
 
+def popcorn(context):
+    if not _pay_cost(context, 59):
+        return False
+    data = slugcat_data(context.source)
+    gained = gain_satiety(data, MAX_SATIETY)
+    context.announce(
+        f"玩家{context.source_player_id}吃爆米花，饱食度+{gained}"
+        f"（{data.satiety}/{MAX_SATIETY}）"
+    )
+    return True
+
+
+def karma_flower(context):
+    if not _pay_cost(context, 51):
+        return False
+    slugcat_data(context.source).karma_flower_pending = True
+    context.announce(f"玩家{context.source_player_id}使用业力花，下次复活不掉业力")
+    return True
+
+
+def transcendence(context):
+    if not _pay_cost(context, 58):
+        return False
+    data = slugcat_data(context.source)
+    if data.lock_layers >= 5:
+        data.lock_layers = 0
+        context.combat.apply_damage(99, context.target_player_id, context.announce)
+        context.announce("三重肯定达成，超度对方")
+        return True
+    data.lock_layers += 1
+    context.announce(f"超度成功，锁定层数{data.lock_layers}")
+    return True
+
+
 CARD_EFFECTS = {
     1: _attack(1, 2, _insert_steel_rod),
     2: _attack(2, 1),
@@ -571,7 +735,7 @@ CARD_EFFECTS = {
     15: trouble,
     **{card_id: _creature(card_id) for card_id in range(16, 27)},
     **{card_id: _discovery(card_id) for card_id in range(27, 36)},
-    **{card_id: _form(card_id) for card_id in range(36, 41)},
+    **{card_id: _form(card_id) for card_id in SLUGCAT_FORM_IDS},
     41: smoke_fruit,
     42: batfly_grass,
     43: flash_fruit,
@@ -580,4 +744,8 @@ CARD_EFFECTS = {
     46: white_pearl,
     47: colored_pearl,
     48: mass_battery,
+    59: popcorn,
+    51: karma_flower,
+    61: _attack(61, 3),
+    58: transcendence,
 }

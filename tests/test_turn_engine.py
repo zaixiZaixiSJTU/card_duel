@@ -57,6 +57,15 @@ class TurnEngineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.engine.enter_phase(TurnPhase.PLAY)
 
+    def test_resume_after_preserves_next_phase_validation(self):
+        self.engine.resume_after(TurnPhase.PLAY)
+
+        self.engine.enter_phase(TurnPhase.DISCARD)
+
+        self.assertEqual(self.state.current_phase, TurnPhase.DISCARD.value)
+        with self.assertRaises(ValueError):
+            self.engine.enter_phase(TurnPhase.DRAW)
+
 
 if __name__ == "__main__":
     unittest.main()

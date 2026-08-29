@@ -10,7 +10,7 @@ class WarriorRules:
         return WarriorData()
 
     def initialize(self, player) -> None:
-        player.health = 30
+        player.health = player.max_health = 30
 
     def register_turn_handlers(self, turn, combat) -> None:
         def resolve_heartlink(context):
