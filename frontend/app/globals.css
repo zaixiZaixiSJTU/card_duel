@@ -217,6 +217,65 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .player-slot i { position: absolute; right: 14px; top: 20px; color: #6f756b; font: 700 8px ui-monospace, monospace; }
 .player-slot.ready { border-color: #d7ff3f55; }
 .player-slot.ready i { color: var(--acid); }
+/* 多人扩展：空座位、加/移座位按钮、自己的座位高亮。 */
+.player-slot.seat-empty { border-style: dashed; background: rgba(23, 28, 23, 0.4); }
+.player-slot.seat-empty .seat-pick { margin-top: 8px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--acid); font: 600 11px var(--font-ui); cursor: pointer; }
+.player-slot.seat-empty .seat-pick:hover { background: rgba(215, 255, 63, 0.12); }
+.player-slot.seat-empty .seat-remove { margin-left: 8px; padding: 6px 10px; border: 1px solid #5a3a3a; border-radius: 6px; background: transparent; color: #ff8a8a; font: 600 11px var(--font-ui); cursor: pointer; }
+.player-slot.seat-empty .seat-remove:hover { background: rgba(255, 138, 138, 0.12); }
+.player-slot.seat-add { display: flex; align-items: center; justify-content: center; border-style: dashed; background: transparent; color: var(--muted); font: 600 12px var(--font-ui); cursor: pointer; }
+.player-slot.seat-add:hover { color: var(--acid); border-color: #d7ff3f55; }
+.player-slot.mine { border-color: #d7ff3f55; box-shadow: 0 0 0 1px #d7ff3f33 inset; }
+/* 多人扩展：阵营颜色系统 - 座位边框按阵营着色。 */
+.player-slot.team-red { border-color: #ff5a5a99; box-shadow: 0 0 0 1px #ff5a5a33 inset; }
+.player-slot.team-blue { border-color: #4aa8ff99; box-shadow: 0 0 0 1px #4aa8ff33 inset; }
+.player-slot.team-green { border-color: #5ad97a99; box-shadow: 0 0 0 1px #5ad97a33 inset; }
+.player-slot.team-yellow { border-color: #ffd24a99; box-shadow: 0 0 0 1px #ffd24a33 inset; }
+.player-slot.team-purple { border-color: #b061ff99; box-shadow: 0 0 0 1px #b061ff33 inset; }
+.player-slot.team-orange { border-color: #ff9a4a99; box-shadow: 0 0 0 1px #ff9a4a33 inset; }
+.player-slot.team-ffa { border-color: rgba(255,255,255,0.08); }
+/* 多人扩展：阵营色块选择器，玩家点击切换自己的阵营颜色。 */
+.team-picker { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
+.team-swatch { width: 18px; height: 18px; padding: 0; border: 1.5px solid rgba(255,255,255,0.15); border-radius: 50%; cursor: pointer; transition: transform 0.15s, border-color 0.15s; }
+.team-swatch:hover { transform: scale(1.15); }
+.team-swatch.active { border-color: #fff; transform: scale(1.2); box-shadow: 0 0 0 2px #fff6; }
+.team-swatch.team-red { background: #ff5a5a; }
+.team-swatch.team-blue { background: #4aa8ff; }
+.team-swatch.team-green { background: #5ad97a; }
+.team-swatch.team-yellow { background: #ffd24a; }
+.team-swatch.team-purple { background: #b061ff; }
+.team-swatch.team-orange { background: #ff9a4a; }
+.team-swatch.team-ffa { background: conic-gradient(#ff5a5a 0 25%, #4aa8ff 25% 50%, #5ad97a 50% 75%, #ffd24a 75% 100%); }
+/* 多人扩展：座位卡片显示玩家名称、房主标记、房主调整模式交互。 */
+/* 房主标记：不抢 border-color（让阵营 team 色生效），改用左上角徽章 + 外发光。 */
+.player-slot.host-seat { box-shadow: 0 0 18px -8px #d7ff3faa; }
+.player-slot.host-seat .host-badge { position: absolute; left: 10px; top: -9px; right: auto; padding: 2px 8px; border-radius: 4px; background: #d7ff3f; color: #1a1f1a; font: 700 9px var(--font-ui); letter-spacing: 0.12em; box-shadow: 0 2px 6px -2px #00000088; }
+.player-slot .seat-display-name { margin-top: 6px; font-size: 15px; font-weight: 700; color: var(--ink); padding-right: 44px; }
+.player-slot .seat-character-name { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); font-weight: 500; padding-right: 44px; }
+.player-slot.seat-interactive { cursor: pointer; }
+.player-slot.seat-target { border-color: #d7ff3f99 !important; box-shadow: 0 0 0 2px #d7ff3f66 inset, 0 0 24px -4px #d7ff3faa; animation: seat-pulse 1.2s ease-in-out infinite; }
+.player-slot.seat-interactive:hover { transform: translateY(-2px); }
+@keyframes seat-pulse { 0%, 100% { box-shadow: 0 0 0 2px #d7ff3f66 inset, 0 0 24px -4px #d7ff3faa; } 50% { box-shadow: 0 0 0 2px #d7ff3faa inset, 0 0 32px -2px #d7ff3fcc; } }
+.seat-op-hint { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border: 1px solid #d7ff3f55; border-radius: var(--radius-sm); background: rgba(215, 255, 63, 0.08); color: var(--acid); font: 600 12px var(--font-ui); }
+.seat-op-hint .ghost-action { padding: 4px 10px; font-size: 11px; }
+.seat-host-actions { display: flex; gap: 6px; margin-top: 8px; }
+.seat-op-btn { padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--ink); font: 600 11px var(--font-ui); cursor: pointer; transition: all 0.15s; }
+.seat-op-btn:hover { border-color: #d7ff3f66; background: rgba(215, 255, 63, 0.1); color: var(--acid); }
+/* 多人扩展：大厅底部名称输入框，玩家可设置自己的展示名。 */
+.name-input-row { display: flex; align-items: center; gap: 6px; }
+.name-label { color: var(--muted); font: 600 10px var(--font-ui); letter-spacing: 0.08em; text-transform: uppercase; }
+.name-input { width: 120px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: rgba(0,0,0,0.3); color: var(--ink); font: 600 12px var(--font-ui); }
+.name-input:focus { outline: none; border-color: #d7ff3f66; box-shadow: 0 0 0 2px #d7ff3f33; }
+.name-input:disabled { opacity: 0.5; cursor: not-allowed; }
+/* 多人扩展：局内信息栏 player-status 按阵营着色边框。
+   原 player-status 无色边框 → 红/蓝/绿/黄/紫/橙阵营色。 */
+.player-status.team-red { border-color: #ff5a5a99; box-shadow: 0 0 0 1px #ff5a5a33 inset, 0 0 16px -4px #ff5a5a66; }
+.player-status.team-blue { border-color: #4aa8ff99; box-shadow: 0 0 0 1px #4aa8ff33 inset, 0 0 16px -4px #4aa8ff66; }
+.player-status.team-green { border-color: #5ad97a99; box-shadow: 0 0 0 1px #5ad97a33 inset, 0 0 16px -4px #5ad97a66; }
+.player-status.team-yellow { border-color: #ffd24a99; box-shadow: 0 0 0 1px #ffd24a33 inset, 0 0 16px -4px #ffd24a66; }
+.player-status.team-purple { border-color: #b061ff99; box-shadow: 0 0 0 1px #b061ff33 inset, 0 0 16px -4px #b061ff66; }
+.player-status.team-orange { border-color: #ff9a4a99; box-shadow: 0 0 0 1px #ff9a4a33 inset, 0 0 16px -4px #ff9a4a66; }
+.player-status.team-ffa { border-color: rgba(255,255,255,0.12); }
 .lobby-sidebar { display: flex; flex-direction: column; gap: 14px; }
 .lobby-sidebar .log-panel { position: static; width: 100%; height: min(var(--chat-height), 300px); }
 .rules-panel { padding: 20px; border: 1px solid var(--line); background: #171c17; }
@@ -287,7 +346,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .player-status {
   width: min(calc(var(--side-column) + 40px), calc(100vw - 32px));
   display: grid;
-  grid-template-columns: 80px 1fr;
+  grid-template-columns: 132px 1fr;
   grid-template-areas:
     "identity health"
     "energy secondary"
@@ -300,13 +359,46 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   box-shadow: 0 10px 40px rgba(0,0,0,0.8);
   backdrop-filter: blur(10px);
 }
-.player-status.active { border-color: var(--acid); box-shadow: 0 0 20px rgba(204, 255, 0, 0.2); }
+/* 当前回合用外环 acid 高亮，不再覆盖 border-color/box-shadow，
+   否则会盖掉 .player-status.team-* 的阵营边框色（"边框颜色和阵营不一致"）。
+   阵营色边框 + 内发光由 team-* 类提供，active 只叠加一层 outline 外环，
+   不碰 border-color/box-shadow 这两个属性，避免同优先级后置规则盖掉阵营色。 */
+.player-status.active { outline: 2px solid var(--acid); outline-offset: 3px; }
+
+/* 对局结束遮罩：置顶覆盖棋盘，提供"回到房间"入口。 */
+.game-over-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  display: grid; place-items: center;
+  background: rgba(8, 12, 8, 0.78);
+  backdrop-filter: blur(6px);
+  animation: game-over-in 0.35s ease-out;
+}
+@keyframes game-over-in { from { opacity: 0; } to { opacity: 1; } }
+.game-over-card {
+  display: grid; gap: 14px; justify-items: center;
+  padding: 34px 44px; border-radius: var(--radius-lg);
+  border: 1px solid rgba(215, 255, 63, 0.35);
+  background: linear-gradient(160deg, rgba(20, 26, 18, 0.96), rgba(12, 16, 12, 0.98));
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(215, 255, 63, 0.12) inset;
+  text-align: center; max-width: 90vw;
+}
+.game-over-card h2 { margin: 0; color: var(--acid); font: 800 26px var(--font-ui); letter-spacing: 0.12em; }
+.game-over-card p { margin: 0; color: var(--ink); font: 600 16px var(--font-ui); }
+.game-over-card .return-room-button {
+  margin-top: 6px; padding: 12px 28px; border-radius: var(--radius-sm);
+  border: 1px solid var(--acid); background: linear-gradient(135deg, var(--acid), #99cc00);
+  color: var(--night); font: 800 15px var(--font-ui); letter-spacing: 0.1em; cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.game-over-card .return-room-button:hover { transform: translateY(-2px); box-shadow: 0 10px 26px rgba(215, 255, 63, 0.35); }
 .player-identity { grid-area: identity; display: flex; min-width: 0; align-items: center; gap: 8px; }
 .avatar { display: grid; flex: 0 0 auto; place-items: center; width: 36px; height: 36px; border-radius: var(--radius-sm); color: #182014; background: linear-gradient(135deg, #a4b28d, #8a9675); box-shadow: 0 2px 8px rgba(0,0,0,0.3); font: 600 17px Georgia, serif; }
 .avatar.char-4 { background: #d5cdbb; }
 .identity { min-width: 0; }
 .identity > small, .identity > strong { display: block; }
-.identity > small { overflow: hidden; color: #9aa596; font-size: 13px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+/* small 现在承载玩家展示名（display_name），不再截断：允许换行，
+   保证信息栏里名称能完整显示（原先 80px 列 + nowrap 会把"玩家1"截成"玩…"）。 */
+.identity > small { color: #cfd8c6; font-size: 13px; font-weight: 700; white-space: normal; word-break: break-word; overflow-wrap: anywhere; line-height: 1.25; }
 .identity > strong { margin-top: 2px; font-size: 20px; font-weight: 800; color: #ffd98a; }
 .game-tooltip-anchor.energy-core {
   grid-area: energy;

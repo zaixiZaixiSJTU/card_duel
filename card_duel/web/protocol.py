@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 
 MAX_CHAT_LENGTH = 200
+# 玩家 display_name 长度上限：足够辨识又不至于撑爆座位卡片。
+MAX_NAME_LENGTH = 20
 WEB_PROTOCOL_VERSION = 2
 
 

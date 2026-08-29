@@ -20,6 +20,7 @@ from card_duel.application.turns import (
 from card_duel.cards.registry import CardRegistry
 from card_duel.core.game import TurnEngine, TurnPhase
 from card_duel.core.models import GameState
+from card_duel.core.rules import add_card_to_hand, reshuffle_discard_into_draw
 from card_duel.web.protocol import ActionError
 
 
@@ -194,7 +195,11 @@ def begin_turn(
     log = ActionLog(private_player_id=player_id)
     turn = _build_turn(room, player_id, registry, log, choices=None)
     turn.enter_phase(TurnPhase.TURN_START)
-    if combat.check_game_over() is None:
+    # 混沌胃袋等回合开始强制选择弃牌：设了 forced_discards 时回合暂停在
+    # TURN_START，等玩家通过 discard_card 完成弃牌后由
+    # _resume_chaotic_stomach 补抽并继续 DRAW/PLAY。
+    forced_discards = state.players[player_id].statuses.forced_discards
+    if combat.check_game_over() is None and forced_discards == 0:
         turn.enter_phase(TurnPhase.DRAW)
         turn.enter_phase(TurnPhase.PLAY)
     _sync_zone(room, player_id)
@@ -234,7 +239,7 @@ def play_card(
             character_id=character_id,
             card_id=card_id,
             source_player_id=player_id,
-            target_player_id=_opponent(player_id),
+            target_player_id=_default_target(state, player_id),
             announce=log.announce,
             choices=choices,
             combat=combat,
@@ -250,7 +255,7 @@ def play_card(
             character_id=character_id,
             card_id=card_id,
             source_player_id=player_id,
-            target_player_id=_opponent(player_id),
+            target_player_id=_default_target(state, player_id),
             announce=log.announce,
             choices=choices,
             combat=combat,
@@ -276,24 +281,33 @@ def play_card(
 
 
 def discard_card(
-    room: MatchRoomPort, player_id: int, data: dict[str, Any]
+    room: MatchRoomPort, player_id: int, data: dict[str, Any], registry=None
 ) -> ActionLog:
     index = _required_index(data)
-    return _discard_indexes(room, player_id, [index])
+    return _discard_indexes(room, player_id, [index], registry=registry)
 
 
 def discard_cards(
-    room: MatchRoomPort, player_id: int, data: dict[str, Any]
+    room: MatchRoomPort, player_id: int, data: dict[str, Any], registry=None
 ) -> ActionLog:
     """Atomically discard a staged selection without index-shift races."""
-    return _discard_indexes(room, player_id, _required_indexes(data))
+    return _discard_indexes(
+        room, player_id, _required_indexes(data), registry=registry
+    )
 
 
 def _discard_indexes(
-    room: MatchRoomPort, player_id: int, indexes: list[int]
+    room: MatchRoomPort, player_id: int, indexes: list[int], *, registry=None
 ) -> ActionLog:
     state, _combat = _require_active(room, player_id)
-    if state.current_phase not in {TurnPhase.PLAY.value, TurnPhase.DISCARD.value}:
+    statuses = state.players[player_id].statuses
+    forced = statuses.forced_discards
+    # 强制选择弃牌（混沌胃袋/手牌超限）允许在任意阶段进行；普通手动弃牌
+    # 仍只能在出牌/弃牌阶段。
+    if forced <= 0 and state.current_phase not in {
+        TurnPhase.PLAY.value,
+        TurnPhase.DISCARD.value,
+    }:
         raise ActionError("wrong_phase", "当前不能弃牌")
     if any(index >= len(state.hand_cards) for index in indexes):
         raise ActionError("invalid_card", "手牌索引超出范围")
@@ -302,6 +316,14 @@ def _discard_indexes(
         for index in indexes
     ):
         raise ActionError("card_not_discardable", "生物牌和插入物不可弃置")
+    # 回合开始（混沌胃袋）的强制弃牌只允许弃刚好 forced 张，避免在
+    # TURN_START 顺势多弃。
+    if (
+        forced > 0
+        and state.current_phase == TurnPhase.TURN_START.value
+        and len(indexes) > forced
+    ):
+        raise ActionError("invalid_card", "混沌胃袋只需弃1张")
 
     original_phase = state.current_phase
     discarded_card_ids = [state.hand_cards[index] for index in indexes]
@@ -309,11 +331,60 @@ def _discard_indexes(
         state.hand_cards.pop(index)
     for card_id in discarded_card_ids:
         return_card_after_use(state, player_id, card_id)
+
+    if forced > 0:
+        statuses.forced_discards = max(0, forced - len(indexes))
+        # 混沌胃袋回合开始强制弃牌：弃满后补抽1张并继续 DRAW/PLAY。
+        if (
+            statuses.forced_discards == 0
+            and original_phase == TurnPhase.TURN_START.value
+            and registry is not None
+        ):
+            log = ActionLog(private_player_id=player_id)
+            _resume_chaotic_stomach(room, player_id, registry, log)
+            _sync_zone(room, player_id)
+            return log
+        remaining = statuses.forced_discards
+        _sync_zone(room, player_id)
+        message = (
+            f"玩家{player_id}弃掉{len(indexes)}张牌"
+            + ("" if remaining == 0 else f"（仍需弃{remaining}张）")
+        )
+        return ActionLog(announcements=[message])
+
     # Flexible discard is an out-of-phase action: it must not move the turn
     # into the mandatory discard phase. End turn still validates hand limits.
     state.current_phase = original_phase
     _sync_zone(room, player_id)
     return ActionLog(announcements=[f"玩家{player_id}弃掉{len(indexes)}张牌"])
+
+
+def _resume_chaotic_stomach(
+    room: MatchRoomPort, player_id: int, registry: CardRegistry, log: ActionLog
+) -> None:
+    """混沌胃袋弃1后：补抽1张，并继续进入 DRAW/PLAY 阶段。
+
+    回合开始阶段（TURN_START）已由 begin_turn 运行过；此处不重放
+    TURN_START，而是 resume_after 后进入 DRAW/PLAY。
+    """
+    state, combat = _runtime(room)
+    # 弃1抽1：抽牌堆空则先洗弃牌堆，再从顶抽1张（与原 TURN_START 行为一致）。
+    if not state.draw_pile:
+        reshuffle_discard_into_draw(state)
+    if state.draw_pile:
+        add_card_to_hand(state, state.draw_pile.pop(0))
+        log.announce("混沌胃袋：弃1抽1，并获得动能")
+    else:
+        log.announce("混沌胃袋：弃1但无牌可抽，获得动能")
+    turn = _build_turn(room, player_id, registry, log, choices=None)
+    if combat.check_game_over() is None:
+        turn.resume_after(TurnPhase.TURN_START)
+        turn.enter_phase(TurnPhase.DRAW)
+        turn.enter_phase(TurnPhase.PLAY)
+    _sync_zone(room, player_id)
+    _apply_pending_zones(room, log.announce)
+    state.local_player_id = player_id
+    _activate_zone(room, player_id)
 
 
 def end_turn(
@@ -326,24 +397,25 @@ def end_turn(
     if state.current_phase not in {TurnPhase.PLAY.value, TurnPhase.DISCARD.value}:
         raise ActionError("wrong_phase", "当前不能结束回合")
     hand_limit = hand_limit_for(state, player_id)
-    if effective_hand_size(state, player_id) > hand_limit:
-        raise ActionError(
-            "hand_limit",
-            f"手牌超过上限，仍需弃 {effective_hand_size(state, player_id) - hand_limit} 张",
-        )
+    excess = effective_hand_size(state, player_id) - hand_limit
+    if excess > 0:
+        # 点击结束回合时手牌超限：不报错，而是自动进入强制选择弃牌阶段
+        # （红框 UI），玩家弃到上限后再点结束回合才真正结束。
+        state.players[player_id].statuses.forced_discards = excess
+        state.current_phase = TurnPhase.DISCARD.value
+        _sync_zone(room, player_id)
+        log = ActionLog(private_player_id=player_id)
+        log.announce(f"手牌超上限，需弃 {excess} 张")
+        return log
 
+    # 强制弃牌已满足（或本就未超限），清零以防残留。
+    state.players[player_id].statuses.forced_discards = 0
     log = ActionLog(private_player_id=player_id)
     turn = _build_turn(room, player_id, registry, log, choices=choices)
-    if effective_hand_size(state, player_id) > hand_limit:
-        state.current_phase = TurnPhase.DISCARD.value
-        turn.resume_after(TurnPhase.PLAY)
-        turn.enter_phase(TurnPhase.DISCARD)
-        turn.enter_phase(TurnPhase.TURN_END)
-    else:
-        state.current_phase = TurnPhase.PLAY.value
-        turn.resume_after(TurnPhase.PLAY)
-        turn.enter_phase(TurnPhase.DISCARD)
-        turn.enter_phase(TurnPhase.TURN_END)
+    state.current_phase = TurnPhase.PLAY.value
+    turn.resume_after(TurnPhase.PLAY)
+    turn.enter_phase(TurnPhase.DISCARD)
+    turn.enter_phase(TurnPhase.TURN_END)
     _sync_zone(room, player_id)
     _apply_pending_zones(room, log.announce)
     winner = combat.check_game_over()
@@ -351,8 +423,11 @@ def end_turn(
         log.announce(f"对局结束：玩家{winner}获胜")
         return log
 
-    next_player = _opponent(player_id)
-    if player_id != state.first_player_id:
+    # 多人扩展：按 turn_order 找下一个存活座位；回到 first_player 才
+    # 视为新一轮开始（round_number += 1）。2 人时与原行为等价（next_player
+    # 即对手，仅在 first_player 完成回合后 +1）。
+    next_player = _next_alive_player(state, player_id)
+    if next_player == state.first_player_id:
         state.round_number += 1
     log.extend(begin_turn(room, next_player, registry))
     return log
@@ -427,7 +502,10 @@ def _sync_zone(room: MatchRoomPort, player_id: int) -> None:
 def _apply_pending_zones(room: MatchRoomPort, announce) -> None:
     state, _combat = _runtime(room)
     active_player_id = state.active_player_id or 1
-    for player_id in (1, 2):
+    # 多人扩展：遍历所有座位（不再写死 (1, 2)），跳过已淘汰玩家。
+    for player_id in list(state.players):
+        if not state.players[player_id].is_alive:
+            continue
         state.local_player_id = player_id
         _activate_zone(room, player_id)
         player = state.players[player_id]
@@ -506,3 +584,45 @@ def _required_indexes(data: dict[str, Any]) -> list[int]:
 
 def _opponent(player_id: int) -> int:
     return 2 if player_id == 1 else 1
+
+
+def _next_alive_player(state: GameState, current_player_id: int) -> int:
+    """turn_order 中下一个仍存活的座位号（多人跳过死亡玩家）。
+
+    2 人时退化到 _opponent 的语义：另一方存活则切到另一方，否则保持自己。
+    """
+    order = list(state.turn_order) if state.turn_order else sorted(state.players)
+    if current_player_id not in order:
+        order.append(current_player_id)
+    current_index = order.index(current_player_id)
+    for offset in range(1, len(order) + 1):
+        candidate = order[(current_index + offset) % len(order)]
+        if state.players[candidate].is_alive:
+            return candidate
+    return current_player_id  # 只剩自己存活（理论上不会到达，胜负已判定）
+
+
+def _default_target(state: GameState, source_player_id: int) -> int:
+    """出牌默认目标：第一个存活敌方座位号。
+
+    阵营限制：FFA (team_id 为 None) 时所有人互为敌方；组队时 team 不同
+    才算敌方。同队不会被选为目标，避免"都选红队还能互打"。
+    没有敌方时（如全员同队，正常对局开局校验会拒绝）返回自己作为占位，
+    resolve_attack 会再次过滤并 announce 不打。
+    """
+    source_team = state.player_teams.get(source_player_id)
+    for player_id in state.players:
+        if player_id == source_player_id:
+            continue
+        if not state.players[player_id].is_alive:
+            continue
+        target_team = state.player_teams.get(player_id)
+        # FFA (None) 时所有人互为敌方；组队时 team 不同才算敌方。
+        if (
+            target_team is None
+            or source_team is None
+            or target_team != source_team
+        ):
+            return player_id
+    # 没有敌方时返回自己占位（开局校验保证不会进入此分支，此处兜底）。
+    return source_player_id

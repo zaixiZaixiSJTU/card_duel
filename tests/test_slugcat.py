@@ -131,19 +131,35 @@ class SlugcatTests(unittest.TestCase):
         self.assertEqual(len(self.game.hand_cards), 3)
         self.assertEqual(self.game.discard_pile, [])
 
-    def test_chaos_stomach_turn_start_discards_and_reshuffles_draw(self):
+    def test_chaos_stomach_turn_start_sets_forced_discard(self):
         data = slugcat_data(self.game.players[1])
         data.form = "混沌胃袋"
+        data.chaotic_last_energy = 3  # 上回合剩余能量 → 本回合动能 +6
         self.game.hand_cards[:] = [1, 6]
-        self.game.draw_pile = []
-        self.game.discard_pile = [44, 8]
 
         turn = TurnEngine(self.game, 1, 1, self.messages.append)
         self.combat.register_turn_handlers(turn)
         turn.enter_phase(TurnPhase.TURN_START)
 
-        self.assertEqual(self.game.discard_pile, [])
-        self.assertEqual(len(self.game.hand_cards), 2)  # 弃1抽1
+        # 玩家选择弃：回合开始只设 forced_discards=1，不立即弃/抽
+        self.assertEqual(self.game.players[1].statuses.forced_discards, 1)
+        self.assertEqual(self.game.hand_cards, [1, 6])  # 手牌未变
+        self.assertEqual(data.momentum, 6)  # 获得动能（3*2）
+        self.assertTrue(any("需选择1张弃置" in m for m in self.messages))
+
+    def test_chaos_stomach_turn_start_skips_when_no_discardable(self):
+        data = slugcat_data(self.game.players[1])
+        data.form = "混沌胃袋"
+        # 手牌全是不可弃的插入卡（49/50）
+        self.game.hand_cards[:] = [49, 50]
+
+        turn = TurnEngine(self.game, 1, 1, self.messages.append)
+        self.combat.register_turn_handlers(turn)
+        turn.enter_phase(TurnPhase.TURN_START)
+
+        # 无可弃卡：不设 forced_discards，跳过弃/抽
+        self.assertEqual(self.game.players[1].statuses.forced_discards, 0)
+        self.assertTrue(any("无牌可弃" in m for m in self.messages))
 
     def test_karma_growth_reaches_ten_and_unlocks_triple_affirmation(self):
         data = slugcat_data(self.game.players[1])
@@ -653,7 +669,9 @@ class SlugcatTests(unittest.TestCase):
         )
 
         self.assertEqual(self.game.players[2].statuses.hand_creatures, [])
-        self.assertEqual(self.game.players[2].health, 20)  # 穿透 -10
+        # 射线虫1血被炸矛3伤一击必杀：生物已死，10伤穿透无意义，
+        # 不再扣玩家血——矛作用到生物与玩家是不同个体。
+        self.assertEqual(self.game.players[2].health, 30)
         self.assertEqual(self.game.players[2].statuses.pending_discards, 0)
 
     def test_spear_penetration_on_creature_hit_same_but_no_discard(self):
@@ -678,11 +696,81 @@ class SlugcatTests(unittest.TestCase):
             )
         )
 
-        # 扣血即穿透，效果与玩家一致；生物无牌可弃，弃牌部分落空
+        # 炸矛10伤作用于生物（秃鹫15-3-10=2存活），玩家不受穿透伤害；
+        # 生物无手牌，弃牌效果无效。
         self.assertEqual(len(self.game.players[2].statuses.hand_creatures), 1)
-        self.assertEqual(self.game.players[2].health, 20)
+        self.assertEqual(self.game.players[2].statuses.hand_creatures[0].health, 2)
+        self.assertEqual(self.game.players[2].health, 30)
         self.assertEqual(self.game.players[2].statuses.pending_discards, 0)
-        self.assertTrue(any("穿透生物" in message for message in self.messages))
+        self.assertTrue(any("对秃鹫造成10点伤害" in message for message in self.messages))
+
+    def test_steel_rod_embeds_in_creature_not_player_hand(self):
+        """钢筋插入生物：挂载到生物身上触发流血，不进入玩家手牌、不挂玩家。"""
+        self.game.players[1].energy = 10
+        add_hand_creature(self.game, 2, 19, owner_id=2)  # 秃鹫 15血
+        self.game.players[2].health = 30
+
+        class _EmbedInVultureChoices(AutomaticChoiceProvider):
+            def choose_option(self, title, prompt, options, default):
+                return next(option for option in options if "秃鹫" in option)
+
+        self.assertTrue(
+            DEFAULT_REGISTRY.play(
+                state=self.game,
+                character_id=4,
+                card_id=1,  # 钢筋
+                source_player_id=1,
+                target_player_id=2,
+                announce=self.messages.append,
+                combat=self.combat,
+                choices=_EmbedInVultureChoices(),
+            )
+        )
+
+        vulture = self.game.players[2].statuses.hand_creatures[0]
+        # 钢筋挂在生物身上，不再作为实体卡插入玩家手牌
+        self.assertEqual(vulture.embedded_steel_rods, 1)
+        self.assertEqual(self.game.players[2].statuses.embedded_steel_rods, 0)
+        self.assertNotIn(49, self.game.players[2].statuses.pending_hand_additions)
+        # 玩家不受穿透伤害，仅生物承受钢筋基础2点伤害
+        self.assertEqual(vulture.health, 13)  # 15 - 2
+        self.assertEqual(self.game.players[2].health, 30)
+        self.assertTrue(any("钢筋插入秃鹫" in m for m in self.messages))
+
+    def test_electric_spear_embeds_in_creature_reduces_its_attack(self):
+        """电矛插入生物：降低该生物后续攻击伤害，不再进入玩家手牌。"""
+        self.game.players[1].energy = 10
+        add_hand_creature(self.game, 1, 19, owner_id=1)  # 玩家1的秃鹫15血
+        self.game.players[1].health = 20
+
+        class _EmbedInOwnVultureChoices(AutomaticChoiceProvider):
+            def choose_option(self, title, prompt, options, default):
+                return next(option for option in options if "秃鹫" in option)
+
+        # 玩家1用电矛打自己的秃鹫：挂载 electric_weakness，不插玩家
+        self.assertTrue(
+            DEFAULT_REGISTRY.play(
+                state=self.game,
+                character_id=4,
+                card_id=5,  # 电矛
+                source_player_id=1,
+                target_player_id=2,
+                announce=self.messages.append,
+                combat=self.combat,
+                choices=_EmbedInOwnVultureChoices(),
+            )
+        )
+
+        vulture = self.game.players[1].statuses.hand_creatures[0]
+        self.assertEqual(vulture.electric_weakness, 2)
+        self.assertEqual(vulture.health, 12)  # 15 - 3
+        self.assertEqual(self.game.players[1].statuses.embedded_electric_spears, 0)
+        self.assertNotIn(50, self.game.players[1].statuses.pending_hand_additions)
+
+        # 回合结束秃鹫攻击其所有者：基础10 - electric_weakness(2) = 8
+        self._run_turn_end(DEFAULT_CHOICES)
+        self.assertEqual(self.game.players[1].health, 20 - 8)
+        self.assertTrue(any("受电矛影响" in m for m in self.messages))
 
     def test_dead_creature_is_consumed_and_not_returned_to_summon_pool(self):
         data = slugcat_data(self.game.players[1])

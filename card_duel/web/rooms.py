@@ -33,6 +33,7 @@ from card_duel.web.gameplay import (
 )
 from card_duel.web.protocol import (
     MAX_CHAT_LENGTH,
+    MAX_NAME_LENGTH,
     ActionError,
     ClientAction,
     error_event,
@@ -55,16 +56,33 @@ class CardZone:
 
 @dataclass(slots=True)
 class PlayerSlot:
+    # player_id 在多人扩展中即"座位号 seat_id"（1..N），同时承担协议层
+    # 玩家标识。user_id 是持久玩家身份，目前用 client_id 占位，未来从认证
+    # 系统取；display_name 用于公告和聊天，避免再写"玩家{player_id}"。
     player_id: int
     client_id: str
+    user_id: str = ""
+    display_name: str = ""
     character_id: int | None = None
     ready: bool = False
+    team_id: int | None = None
     deck_counts: dict[int, dict[int, int]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.user_id:
+            self.user_id = self.client_id
+        if not self.display_name:
+            self.display_name = f"玩家{self.player_id}"
 
 
 @dataclass(slots=True)
 class RoomSettings:
+    # 兼容字段：旧客户端仍可发送 first_player="host"/"guest"/"random"。
+    # 新客户端改用 first_seat（座位号）+ random_seat_order（开局时随机
+    # 打乱座位顺序，即"随机顺序"按钮）。
     first_player: str = "random"
+    first_seat: int | None = None
+    random_seat_order: bool = False
     seed: int | None = None
     round1_no_damage: bool = True
 
@@ -73,6 +91,11 @@ class RoomSettings:
 class Room:
     code: str
     players: dict[int, PlayerSlot] = field(default_factory=dict)
+    seat_capacity: int = 2
+    # 房主身份跟随 client_id（创建房间的连接），不跟随座位号。
+    # 这样房主用 pick_seat 换到其他座位后仍保留房主权限；房主也能被
+    # swap_seats / move_player 调整位置而不丢失权限。
+    host_client_id: str = ""
     settings: RoomSettings = field(default_factory=RoomSettings)
     status: str = "lobby"
     state: GameState | None = None
@@ -81,31 +104,74 @@ class Room:
     revision: int = 0
     pending_action: PendingAction | None = None
 
+    def is_host(self, connection: "ClientConnection") -> bool:
+        """房主判断：以创建房间的 client_id 为准，不依赖座位号。"""
+        return connection.client_id == self.host_client_id
+
     def start_match(self, registry: CardRegistry) -> ActionLog:
         if self.status != "lobby":
             raise ActionError("match_started", "对局已经开始")
-        if set(self.players) != {1, 2}:
-            raise ActionError("room_not_ready", "需要两名玩家才能开始")
+        # 多人扩展：放开 2 人限制，支持 2..N 人开局。
+        # 回合轮转按 turn_order 跳过死亡玩家，胜负按"敌方全死算赢"。
+        occupied_seats = sorted(self.players)
+        if len(occupied_seats) < 2:
+            raise ActionError("room_not_ready", "需要至少两名玩家才能开始")
         if any(slot.character_id is None for slot in self.players.values()):
             raise ActionError("character_required", "双方必须先选择角色")
         if not all(slot.ready for slot in self.players.values()):
             raise ActionError("room_not_ready", "双方尚未准备")
+        # 阵营多样性校验：避免全员同色无法交战。
+        # FFA（team_id 全为 None）允许——所有人互为敌方；全员同一非空
+        # 阵营时拒绝（否则没有可攻击目标，对局无法进行）。
+        team_ids = {slot.team_id for slot in self.players.values()}
+        if (
+            len(self.players) > 1
+            and len(team_ids) == 1
+            and None not in team_ids
+        ):
+            raise ActionError(
+                "team_diversity", "至少需要两种不同阵营才能开始"
+            )
 
         seed = self.settings.seed
         if seed is None:
             seed = secrets.randbelow(2**31)
-        if self.settings.first_player == "host":
-            first_player_id = 1
+        # 座位顺序：默认按座位号升序；房主开启随机顺序时打乱后再开局。
+        seats = list(occupied_seats)
+        if self.settings.random_seat_order:
+            rng = random.Random(seed ^ 0x5EED_0DE1)
+            rng.shuffle(seats)
+        # 先手座位：first_seat 优先，否则回退到旧 first_player 语义。
+        first_player_id: int
+        if self.settings.first_seat is not None:
+            if self.settings.first_seat not in seats:
+                raise ActionError("invalid_settings", "指定的先手座位不存在")
+            first_player_id = self.settings.first_seat
+        elif self.settings.first_player == "host":
+            first_player_id = seats[0]
         elif self.settings.first_player == "guest":
-            first_player_id = 2
+            first_player_id = seats[-1]
         else:
-            first_player_id = secrets.choice((1, 2))
+            first_player_id = secrets.choice(seats)
+        turn_order = seats
+        # 把先手座位排到 turn_order 首位，保持后续轮转语义简单。
+        while turn_order and turn_order[0] != first_player_id:
+            turn_order.append(turn_order.pop(0))
 
         character_ids = {
             player_id: slot.character_id for player_id, slot in self.players.items()
         }
+        player_teams = {
+            player_id: slot.team_id for player_id, slot in self.players.items()
+        }
+        # 多人扩展：显式构造 players dict，每个就座座位一个 CharacterState。
+        # GameState 默认只有 {1, 2}，3+ 人时必须显式传入避免 KeyError。
+        players = {seat: CharacterState() for seat in character_ids}
         state = GameState(
+            players=players,
             character_ids=character_ids,
+            player_teams=player_teams,
+            turn_order=list(turn_order),
             random_seed=seed,
             first_player_id=first_player_id,
             round1_no_damage=self.settings.round1_no_damage,
@@ -220,6 +286,9 @@ Delivery = tuple[ClientConnection, dict[str, object]]
 class RoomManager:
     """Own rooms, validate client actions, and fan out personalized snapshots."""
 
+    # 房间允许的最大座位数。多人扩展已放开 2..8 人开局。
+    MAX_SEATS = 8
+
     def __init__(self, registry: CardRegistry = DEFAULT_REGISTRY) -> None:
         self.registry = registry
         self.rooms: dict[str, Room] = {}
@@ -267,6 +336,14 @@ class RoomManager:
             "configure_character_deck": self._configure_character_deck,
             "create_room": self._create_room,
             "join_room": self._join_room,
+            "pick_seat": self._pick_seat,
+            "add_seat": self._add_seat,
+            "remove_seat": self._remove_seat,
+            "shuffle_seats": self._shuffle_seats,
+            "swap_seats": self._swap_seats_action,
+            "move_player": self._move_player,
+            "set_team": self._set_team,
+            "set_name": self._set_name,
             "select_character": self._select_character,
             "configure_room": self._configure_room,
             "set_ready": self._set_ready,
@@ -279,6 +356,7 @@ class RoomManager:
             "end_turn": self._end_turn,
             "resolve_choice": self._resolve_choice,
             "cancel_choice": self._cancel_choice,
+            "return_to_room": self._return_to_room,
         }
         room = (
             self.rooms.get(connection.room_code)
@@ -298,12 +376,18 @@ class RoomManager:
         return handler(connection, action.data)
 
     def _create_room(
-        self, connection: ClientConnection, _data: dict[str, Any]
+        self, connection: ClientConnection, data: dict[str, Any]
     ) -> list[Delivery]:
         self._require_outside_room(connection)
         code = self._new_room_code()
-        room = Room(code=code)
-        room.players[1] = PlayerSlot(player_id=1, client_id=connection.client_id)
+        room = Room(code=code, seat_capacity=2, host_client_id=connection.client_id)
+        # 房主默认坐座位 1；座位 2..N 默认为空，等客机选座。
+        # 房主身份保存在 host_client_id，房主换座位后权限不变。
+        room.players[1] = PlayerSlot(
+            player_id=1,
+            client_id=connection.client_id,
+            display_name=str(data.get("display_name") or "").strip() or "",
+        )
         self.rooms[code] = room
         connection.room_code = code
         connection.player_id = 1
@@ -315,6 +399,7 @@ class RoomManager:
     def _join_room(
         self, connection: ClientConnection, data: dict[str, Any]
     ) -> list[Delivery]:
+        """兼容旧客户端：不带 seat 时自动坐到最小空座位。"""
         self._require_outside_room(connection)
         code = str(data.get("room_code", "")).strip()
         room = self.rooms.get(code)
@@ -322,15 +407,304 @@ class RoomManager:
             raise ActionError("room_not_found", "房间不存在")
         if room.status != "lobby":
             raise ActionError("match_started", "该房间的对局已经开始")
-        if len(room.players) >= 2:
-            raise ActionError("room_full", "房间已满")
-        room.players[2] = PlayerSlot(player_id=2, client_id=connection.client_id)
+        seat = data.get("seat")
+        if seat is None:
+            seat = self._first_free_seat(room)
+        else:
+            seat = _required_int({"seat": seat}, "seat")
+        if seat not in self._all_seats(room):
+            raise ActionError("invalid_seat", "座位号不存在")
+        if seat in room.players:
+            raise ActionError("seat_taken", "该座位已被占用")
+        room.players[seat] = PlayerSlot(
+            player_id=seat,
+            client_id=connection.client_id,
+            display_name=str(data.get("display_name") or "").strip() or "",
+        )
         connection.room_code = code
-        connection.player_id = 2
+        connection.player_id = seat
         return [
-            (connection, event("room_joined", room_code=code, player_id=2)),
+            (connection, event("room_joined", room_code=code, player_id=seat)),
             *self._room_state_deliveries(room),
         ]
+
+    def _pick_seat(
+        self, connection: ClientConnection, data: dict[str, Any]
+    ) -> list[Delivery]:
+        """已加入房间的玩家换座，或未入房玩家直接选座加入。
+
+        满房换座支持：目标座位被其他玩家占用时，执行双方座位交换
+        （各自的角色/阵营/准备/牌库配置跟随玩家走到对方座位），
+        而不是拒绝。这样玩家即使前面进满了也能调整座位顺序。
+        """
+        seat = _required_int(data, "seat")
+        if connection.room_code is None:
+            # 未入房：走 join 逻辑但指定 seat，并带上 display_name 等字段。
+            code = str(data.get("room_code", "")).strip()
+            join_data: dict[str, Any] = {"room_code": code, "seat": seat}
+            if "display_name" in data:
+                join_data["display_name"] = data["display_name"]
+            if "team_id" in data:
+                join_data["team_id"] = data["team_id"]
+            return self._join_room(connection, join_data)
+        room = self.rooms.get(connection.room_code)
+        if room is None:
+            raise ActionError("room_not_found", "房间不存在")
+        if room.status != "lobby":
+            raise ActionError("match_started", "该房间的对局已经开始")
+        if seat not in self._all_seats(room):
+            raise ActionError("invalid_seat", "座位号不存在")
+        my_old_seat = connection.player_id
+        if my_old_seat is None:
+            # 已在房间但没有座位（理论上不该发生）：直接占目标座位。
+            if seat in room.players:
+                raise ActionError("seat_taken", "该座位已被占用")
+            room.players[seat] = PlayerSlot(
+                player_id=seat,
+                client_id=connection.client_id,
+                team_id=data.get("team_id"),
+            )
+            connection.player_id = seat
+            self._reset_readiness(room)
+            return self._room_state_deliveries(room)
+        if seat == my_old_seat:
+            # 点击自己当前座位：无操作，仅刷新。
+            return self._room_state_deliveries(room)
+        if seat not in room.players:
+            # 目标座位空：释放原座位，迁入新座位。
+            old_slot = room.players.pop(my_old_seat, None)
+            # 自定义名称跟随玩家：默认名(玩家{旧座位号})随座位号更新，
+            # 自定义名保留不动。
+            old_display_name = old_slot.display_name if old_slot else ""
+            if old_display_name == f"玩家{my_old_seat}":
+                new_display_name = f"玩家{seat}"
+            else:
+                new_display_name = old_display_name
+            old_user_id = old_slot.user_id if old_slot else connection.client_id
+            room.players[seat] = PlayerSlot(
+                player_id=seat,
+                client_id=connection.client_id,
+                user_id=old_user_id,
+                display_name=new_display_name,
+                team_id=data.get("team_id"),
+                deck_counts=old_slot.deck_counts if old_slot else {},
+            )
+            connection.player_id = seat
+            self._reset_readiness(room)
+            return self._room_state_deliveries(room)
+        # 目标座位被其他玩家占用：执行双方交换。
+        occupant_client_id = room.players[seat].client_id
+        if occupant_client_id == connection.client_id:
+            return self._room_state_deliveries(room)
+        self._swap_seats(room, my_old_seat, seat)
+        self._reset_readiness(room)
+        return self._room_state_deliveries(room)
+
+    def _swap_seats(self, room: Room, seat_a: int, seat_b: int) -> None:
+        """交换两个座位的玩家身份（client_id、角色、阵营、准备、牌库配置）。
+
+        座位号本身不变（slot.player_id 跟随座位号），玩家带着自己的数据
+        换到对方座位；两个 connection.player_id 也同步更新。这样满房后
+        也能调整座位顺序，避免"前面进满了很难改"。
+        """
+        slot_a = room.players[seat_a]
+        slot_b = room.players[seat_b]
+        # 记录交换前 display_name 是否为默认格式（玩家{座位号}）。
+        # 交换后 slot_a 持有原 b 的名字、slot_b 持有原 a 的名字；
+        # 默认名应跟随当前座位号，自定义名跟随玩家（保持交换后的值）。
+        a_name_default = slot_a.display_name == f"玩家{seat_a}"
+        b_name_default = slot_b.display_name == f"玩家{seat_b}"
+        # 交换所有玩家相关字段（保留 player_id 即座位号不变）。
+        for field_name in (
+            "client_id",
+            "user_id",
+            "display_name",
+            "character_id",
+            "ready",
+            "team_id",
+            "deck_counts",
+        ):
+            a_val = getattr(slot_a, field_name)
+            b_val = getattr(slot_b, field_name)
+            setattr(slot_a, field_name, b_val)
+            setattr(slot_b, field_name, a_val)
+        # 修正默认名：原 b 是默认名 → slot_a 现在持默认名，跟随座位 a；
+        # 原 a 是默认名 → slot_b 现在持默认名，跟随座位 b。
+        if b_name_default:
+            slot_a.display_name = f"玩家{seat_a}"
+        if a_name_default:
+            slot_b.display_name = f"玩家{seat_b}"
+        # player_id 保持不变（=座位号）。
+        slot_a.player_id = seat_a
+        slot_b.player_id = seat_b
+        # 同步两个 connection 的 player_id。
+        # 交换后 slot_a 持有原 slot_b 的 client_id，所以那位玩家现在在座位 a。
+        conn_for_a = self.connections.get(slot_a.client_id)
+        conn_for_b = self.connections.get(slot_b.client_id)
+        if conn_for_a is not None:
+            conn_for_a.player_id = seat_a
+        if conn_for_b is not None:
+            conn_for_b.player_id = seat_b
+
+    def _add_seat(
+        self, connection: ClientConnection, _data: dict[str, Any]
+    ) -> list[Delivery]:
+        room, _slot = self._require_lobby_player(connection)
+        if not room.is_host(connection):
+            raise ActionError("host_only", "只有房主可以加座位")
+        if room.seat_capacity >= self.MAX_SEATS:
+            raise ActionError("seat_limit", f"房间最多 {self.MAX_SEATS} 个座位")
+        room.seat_capacity += 1
+        self._reset_readiness(room)
+        return self._room_state_deliveries(room)
+
+    def _remove_seat(
+        self, connection: ClientConnection, data: dict[str, Any]
+    ) -> list[Delivery]:
+        room, _slot = self._require_lobby_player(connection)
+        if not room.is_host(connection):
+            raise ActionError("host_only", "只有房主可以移除座位")
+        seat = _required_int(data, "seat")
+        if seat not in self._all_seats(room):
+            raise ActionError("invalid_seat", "座位号不存在")
+        if seat in room.players:
+            raise ActionError("seat_occupied", "已坐人的座位不能移除（请用踢人或换座）")
+        if room.seat_capacity <= 2:
+            raise ActionError("seat_limit", "至少保留 2 个座位")
+        # 收缩 seat_capacity 并重新编号最大座位。
+        room.seat_capacity -= 1
+        self._reset_readiness(room)
+        return self._room_state_deliveries(room)
+
+    def _shuffle_seats(
+        self, connection: ClientConnection, _data: dict[str, Any]
+    ) -> list[Delivery]:
+        """房主随机重排座位顺序：玩家带着自己的数据换到新座位号。"""
+        room, _slot = self._require_lobby_player(connection)
+        if not room.is_host(connection):
+            raise ActionError("host_only", "只有房主可以随机座位")
+        old_seats = sorted(room.players)
+        slots = [room.players[seat] for seat in old_seats]
+        # 记录每个 slot 是否为默认名（玩家{原座位号}），便于跟随新座位号。
+        is_default_name = [
+            slot.display_name == f"玩家{seat}"
+            for seat, slot in zip(old_seats, slots, strict=True)
+        ]
+        # Fisher-Yates 用一个独立的房间级 RNG，避免与开局种子混淆。
+        rng = random.Random(secrets.randbelow(2**31))
+        rng.shuffle(slots)
+        room.players.clear()
+        for seat, slot, was_default in zip(
+            old_seats, slots, is_default_name, strict=True
+        ):
+            # 保留玩家全部数据（角色/阵营/准备/牌库/名称），只换座位号。
+            slot.player_id = seat
+            # 默认名跟随新座位号；自定义名保留不动。
+            if was_default:
+                slot.display_name = f"玩家{seat}"
+            room.players[seat] = slot
+            # 同步 connection.player_id 到新座位。
+            conn = self.connections.get(slot.client_id)
+            if conn is not None:
+                conn.player_id = seat
+        self._reset_readiness(room)
+        return self._room_state_deliveries(room)
+
+    def _swap_seats_action(
+        self, connection: ClientConnection, data: dict[str, Any]
+    ) -> list[Delivery]:
+        """房主强制交换两个已占用座位的玩家。
+
+        参数：seat_a, seat_b（两个已占用座位号）。
+        调用现有 _swap_seats：双方角色/阵营/准备/牌库/名称跟随玩家走到对方座位。
+        """
+        room, _slot = self._require_lobby_player(connection)
+        if not room.is_host(connection):
+            raise ActionError("host_only", "只有房主可以交换座位")
+        seat_a = _required_int(data, "seat_a")
+        seat_b = _required_int(data, "seat_b")
+        if seat_a == seat_b:
+            raise ActionError("invalid_seat", "两个座位不能相同")
+        for seat in (seat_a, seat_b):
+            if seat not in self._all_seats(room):
+                raise ActionError("invalid_seat", "座位号不存在")
+            if seat not in room.players:
+                raise ActionError("seat_empty", "只能交换已坐人的座位")
+        self._swap_seats(room, seat_a, seat_b)
+        self._reset_readiness(room)
+        return self._room_state_deliveries(room)
+
+    def _move_player(
+        self, connection: ClientConnection, data: dict[str, Any]
+    ) -> list[Delivery]:
+        """房主把某个已坐人的玩家强制迁移到指定的空座位。
+
+        参数：from_seat（已占用座位）、to_seat（空座位）。
+        单方面迁移：玩家带着自己的数据（角色/阵营/准备/牌库/名称）搬到空座位，
+        原座位腾空。不同于 swap_seats 的双向交换。
+        """
+        room, _slot = self._require_lobby_player(connection)
+        if not room.is_host(connection):
+            raise ActionError("host_only", "只有房主可以迁移玩家")
+        from_seat = _required_int(data, "from_seat")
+        to_seat = _required_int(data, "to_seat")
+        if from_seat == to_seat:
+            raise ActionError("invalid_seat", "起始座位与目标座位不能相同")
+        for seat in (from_seat, to_seat):
+            if seat not in self._all_seats(room):
+                raise ActionError("invalid_seat", "座位号不存在")
+        if from_seat not in room.players:
+            raise ActionError("seat_empty", "起始座位没有玩家")
+        if to_seat in room.players:
+            raise ActionError("seat_taken", "目标座位已被占用")
+        # 迁移：复用 _pick_seat 的迁移分支逻辑（保留自定义名）。
+        old_slot = room.players.pop(from_seat)
+        old_display_name = old_slot.display_name
+        if old_display_name == f"玩家{from_seat}":
+            new_display_name = f"玩家{to_seat}"
+        else:
+            new_display_name = old_display_name
+        old_slot.player_id = to_seat
+        old_slot.display_name = new_display_name
+        room.players[to_seat] = old_slot
+        # 同步 connection.player_id 到新座位。
+        conn = self.connections.get(old_slot.client_id)
+        if conn is not None:
+            conn.player_id = to_seat
+        self._reset_readiness(room)
+        return self._room_state_deliveries(room)
+
+    def _set_name(
+        self, connection: ClientConnection, data: dict[str, Any]
+    ) -> list[Delivery]:
+        """玩家设置自己的 display_name，方便在座位和公告中辨识。"""
+        room, slot = self._require_lobby_player(connection)
+        if slot.ready:
+            raise ActionError("ready_locked", "已准备，请先取消准备再改名")
+        raw_name = data.get("display_name")
+        if not isinstance(raw_name, str):
+            raise ActionError("invalid_name", "display_name 必须是字符串")
+        name = " ".join(raw_name.strip().splitlines())[:MAX_NAME_LENGTH]
+        if not name:
+            raise ActionError("invalid_name", "名称不能为空")
+        slot.display_name = name
+        # 改名不影响游戏公平，不重置任何人准备。
+        return self._room_state_deliveries(room)
+
+    def _set_team(
+        self, connection: ClientConnection, data: dict[str, Any]
+    ) -> list[Delivery]:
+        room, slot = self._require_lobby_player(connection)
+        if slot.ready:
+            raise ActionError("ready_locked", "已准备，请先取消准备再改阵营")
+        team_id = data.get("team_id")
+        if team_id is not None:
+            if isinstance(team_id, bool) or not isinstance(team_id, int):
+                raise ActionError("invalid_team", "team_id 必须是整数或 null")
+            if not 0 <= team_id < 100:
+                raise ActionError("invalid_team", "team_id 超出允许范围")
+        slot.team_id = team_id
+        return self._room_state_deliveries(room)
 
     def _configure_character_deck(
         self, connection: ClientConnection, data: dict[str, Any]
@@ -398,13 +772,24 @@ class RoomManager:
         self, connection: ClientConnection, data: dict[str, Any]
     ) -> list[Delivery]:
         room, _slot = self._require_lobby_player(connection)
-        if connection.player_id != 1:
+        if not room.is_host(connection):
             raise ActionError("host_only", "只有房主可以修改房间规则")
         first_player = data.get("first_player", room.settings.first_player)
         if first_player not in {"host", "guest", "random"}:
             raise ActionError(
                 "invalid_settings", "first_player 必须是 host、guest 或 random"
             )
+        # 多人扩展：first_seat 与 random_seat_order。新客户端用这两个字段
+        # 替代旧 host/guest/random 三选一。
+        first_seat = data.get("first_seat", room.settings.first_seat)
+        if first_seat is not None:
+            if isinstance(first_seat, bool) or not isinstance(first_seat, int):
+                raise ActionError("invalid_settings", "first_seat 必须是整数或 null")
+            if first_seat not in self._all_seats(room):
+                raise ActionError("invalid_settings", "first_seat 不在合法座位范围")
+        random_seat_order = data.get("random_seat_order", room.settings.random_seat_order)
+        if not isinstance(random_seat_order, bool):
+            raise ActionError("invalid_settings", "random_seat_order 必须是布尔值")
         seed_value = data.get("seed", room.settings.seed)
         if seed_value is not None:
             if isinstance(seed_value, bool) or not isinstance(seed_value, int):
@@ -416,6 +801,8 @@ class RoomManager:
             raise ActionError("invalid_settings", "round1_no_damage 必须是布尔值")
         room.settings = RoomSettings(
             first_player=first_player,
+            first_seat=first_seat,
+            random_seat_order=random_seat_order,
             seed=seed_value,
             round1_no_damage=no_damage,
         )
@@ -432,13 +819,47 @@ class RoomManager:
         if ready and slot.character_id is None:
             raise ActionError("character_required", "请先选择角色")
         slot.ready = ready
-        if len(room.players) == 2 and all(item.ready for item in room.players.values()):
+        # 多人扩展：所有就座的玩家都准备才开局（2..N 人）。
+        all_ready = bool(room.players) and all(
+            item.ready for item in room.players.values()
+        )
+        if all_ready:
             log = room.start_match(self.registry)
             return [
                 *self._match_started_deliveries(room),
                 *self._log_deliveries(room, log),
             ]
         return self._room_state_deliveries(room)
+
+    def _return_to_room(
+        self, connection: ClientConnection, _data: dict[str, Any]
+    ) -> list[Delivery]:
+        # 对局结束后回到房间：清算对局状态，房间切回 lobby。
+        # 保留座位/角色/阵营/名称，仅重置准备状态，方便同一批人再开一局。
+        # 前端收到 room_state 会自动 setMatch(null) 切回房间界面。
+        room, _slot = self._require_room_player(connection)
+        if room.status != "playing":
+            raise ActionError("match_not_started", "当前不在对局中")
+        if room.state is None or not room.state.game_over:
+            raise ActionError("game_not_over", "对局尚未结束，无法回到房间")
+        room.state = None
+        room.combat = None
+        room.card_zones = {}
+        room.pending_action = None
+        room.status = "lobby"
+        self._reset_readiness(room)
+        room.revision += 1
+        return self._room_state_deliveries(room)
+
+    def _all_seats(self, room: Room) -> list[int]:
+        """返回当前房间所有合法座位号（1..seat_capacity）。"""
+        return list(range(1, room.seat_capacity + 1))
+
+    def _first_free_seat(self, room: Room) -> int:
+        for seat in self._all_seats(room):
+            if seat not in room.players:
+                return seat
+        raise ActionError("room_full", "房间已满")
 
     def _chat(
         self, connection: ClientConnection, data: dict[str, Any]
@@ -499,7 +920,7 @@ class RoomManager:
         snapshot = self._snapshot(room)
         try:
             handler = discard_cards if multiple else discard_card
-            log = handler(room, connection.player_id, data)
+            log = handler(room, connection.player_id, data, self.registry)
         except Exception:
             self._restore(room, snapshot)
             raise
@@ -626,7 +1047,11 @@ class RoomManager:
             return left_delivery
 
         room.players.pop(player_id, None)
-        if player_id == 1 or room.status == "playing":
+        # 房主离开 → 关房（无论 lobby 还是 playing）。
+        # 对局中任一玩家离开 → 关房（断线重连尚未实现，无法继续）。
+        # 多人 lobby 阶段客机离开 → 只清自己的座位，房间继续。
+        # 房主身份跟随 client_id，所以用 host_client_id 判断。
+        if connection.client_id == room.host_client_id or room.status == "playing":
             self.rooms.pop(room.code, None)
             deliveries = []
             for target in self._room_connections(room):
@@ -708,8 +1133,17 @@ class RoomManager:
 
     def _room_state_deliveries(self, room: Room) -> list[Delivery]:
         room_view = self._room_view(room)
+        # 每个连接带上自己的 player_id（座位号），前端据此同步本地 playerId。
+        # 这样房主/玩家换座后前端 playerId 不会脱节，isHost/isMine 判断始终正确。
         return [
-            (connection, event("room_state", room=room_view))
+            (
+                connection,
+                event(
+                    "room_state",
+                    room=room_view,
+                    your_player_id=connection.player_id,
+                ),
+            )
             for connection in self._room_connections(room)
         ]
 
@@ -817,15 +1251,51 @@ class RoomManager:
                     ):
                         counts[spec.card_id] = spec.source_count
             default_deck_counts[str(character_id)] = counts
+        # 多人扩展：seats 列表覆盖所有座位（含空座位），方便前端渲染
+        # 选座位 UI；players 字段保留以兼容只读取已坐玩家列表的旧前端。
+        # 房主身份跟随 client_id：返回 host_seat（房主当前所在座位号），
+        # 前端用 (playerId === host_seat) 判断房主，无需感知 client_id。
+        host_seat: int | None = None
+        for seat, slot in room.players.items():
+            if slot.client_id == room.host_client_id:
+                host_seat = seat
+                break
+        seats_payload = []
+        for seat in self._all_seats(room):
+            slot = room.players.get(seat)
+            if slot is None:
+                seats_payload.append({"seat_id": seat, "occupied": False})
+            else:
+                seats_payload.append(
+                    {
+                        "seat_id": seat,
+                        "occupied": True,
+                        "player_id": slot.player_id,
+                        "display_name": slot.display_name,
+                        "is_host": slot.client_id == room.host_client_id,
+                        "character_id": slot.character_id,
+                        "ready": slot.ready,
+                        "team_id": slot.team_id,
+                        "deck_counts": {
+                            str(key): value
+                            for key, value in slot.deck_counts.items()
+                        },
+                    }
+                )
         return {
             "room_code": room.code,
             "status": room.status,
+            "seat_capacity": room.seat_capacity,
+            "host_seat": host_seat,
+            "seats": seats_payload,
             "settings": asdict(room.settings),
             "players": [
                 {
                     "player_id": slot.player_id,
                     "character_id": slot.character_id,
                     "ready": slot.ready,
+                    "team_id": slot.team_id,
+                    "display_name": slot.display_name,
                     "deck_counts": {
                         str(key): value for key, value in slot.deck_counts.items()
                     },
@@ -844,7 +1314,17 @@ class RoomManager:
         player_id = connection.player_id
         if state is None or player_id is None:
             raise RuntimeError("对局状态尚未初始化")
-        opponent_id = 2 if player_id == 1 else 1
+        # 多人扩展：opponent 字段保留以兼容旧前端（2 人时仍按 1↔2 取），
+        # 3+ 人时回退为 turn_order 中除自己外的第一个座位。新前端应使用
+        # others 列表渲染所有对手的牌区计数。
+        turn_order = list(state.turn_order) or sorted(state.players)
+        if player_id in turn_order:
+            others_order = [
+                seat for seat in turn_order if seat != player_id
+            ]
+        else:
+            others_order = [seat for seat in turn_order if seat != player_id]
+        opponent_id = others_order[0] if others_order else player_id
         own_zone = room.card_zones[player_id]
         opponent_zone = room.card_zones[opponent_id]
         catalogs = {
@@ -865,6 +1345,30 @@ class RoomManager:
             for character_id in set(state.character_ids.values())
             if character_id is not None
         }
+        # 公开玩家 payload 合并 PlayerSlot 的 team_id/display_name。
+        players_payload: dict[str, object] = {}
+        for pid, character in state.players.items():
+            slot = room.players.get(pid)
+            payload = _public_player_payload(character)
+            payload["team_id"] = slot.team_id if slot is not None else None
+            payload["display_name"] = (
+                slot.display_name if slot is not None else f"玩家{pid}"
+            )
+            payload["seat_id"] = pid
+            players_payload[str(pid)] = payload
+        others_zones = []
+        for seat in others_order:
+            zone = room.card_zones.get(seat)
+            if zone is None:
+                continue
+            others_zones.append(
+                {
+                    "player_id": seat,
+                    "hand_count": len(zone.hand),
+                    "draw_count": len(zone.draw_pile),
+                    "discard_count": len(zone.discard_pile),
+                }
+            )
         return {
             "room_code": room.code,
             "revision": room.revision,
@@ -872,10 +1376,11 @@ class RoomManager:
             "character_ids": {
                 str(key): value for key, value in state.character_ids.items()
             },
-            "players": {
-                str(key): _public_player_payload(value)
-                for key, value in state.players.items()
+            "player_teams": {
+                str(key): value for key, value in state.player_teams.items()
             },
+            "turn_order": list(turn_order),
+            "players": players_payload,
             "card_catalogs": catalogs,
             "random_seed": state.random_seed,
             "first_player_id": state.first_player_id,
@@ -900,12 +1405,16 @@ class RoomManager:
                 ),
                 "draw_count": len(own_zone.draw_pile),
                 "discard_count": len(own_zone.discard_pile),
+                "forced_discards": state.players[player_id].statuses.forced_discards,
             },
+            # 兼容字段：2 人时即对手；3+ 人时仅返回轮转中的下一个对手。
             "opponent": {
                 "hand_count": len(opponent_zone.hand),
                 "draw_count": len(opponent_zone.draw_pile),
                 "discard_count": len(opponent_zone.discard_pile),
             },
+            # 多人扩展：所有非自己的玩家牌区计数，3+ 人前端据此渲染。
+            "others": others_zones,
         }
 
     def _card_costs(

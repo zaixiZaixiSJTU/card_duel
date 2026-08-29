@@ -7,6 +7,7 @@ from dataclasses import replace
 from card_duel.cards.slugcat.creatures import (
     add_hand_creature,
     add_threat,
+    damage_creature,
     kill_matching_creature,
     remove_all_local_hand_creatures,
     remove_hand_creature,
@@ -155,7 +156,30 @@ def _attack(card_id: int, base_damage: int, on_penetrate=None):
     return effect
 
 
-def _insert_steel_rod(context, creature_hit=False):
+def _creature_from_target(context, target):
+    """根据 AttackTarget 在对应 zone 中定位具体的 CreatureState。
+
+    生物与玩家是不同个体：矛作用到生物时，弃牌等需要手牌的效果无效，
+    但流血/减伤等持续效果应挂在生物身上，故需拿到生物实例来修改其字段。
+    """
+    if target is None:
+        return None
+    statuses = context.state.players[target.player_id].statuses
+    zone = statuses.creature_threats if target.zone == "threat" else statuses.hand_creatures
+    return next((item for item in zone if item.card_id == target.card_id), None)
+
+
+def _insert_steel_rod(context, target=None):
+    # 目标为生物：钢筋挂载到生物身上触发持续流血，不再进入玩家手牌。
+    creature = _creature_from_target(context, target)
+    if creature is not None:
+        creature.embedded_steel_rods += 1
+        context.announce(
+            f"钢筋插入{SLUGCAT_SPECS_BY_ID[creature.card_id].name}，"
+            f"其后续攻击将因流血额外造成{creature.embedded_steel_rods * 2}点伤害"
+        )
+        return
+    # 目标为玩家：钢筋作为实体卡插入玩家手牌，并在其后续回合造成流血。
     context.target.statuses.embedded_steel_rods += 1
     context.target.statuses.inserted_cards.append(
         InsertedCardState(49, context.source_player_id)
@@ -164,19 +188,36 @@ def _insert_steel_rod(context, creature_hit=False):
     context.announce(f"钢筋插入玩家{context.target_player_id}的手牌")
 
 
-def _insert_explosive_spear(context, creature_hit=False):
-    context.combat.lose_life(10, context.target_player_id, context.announce)
-    if not creature_hit:
-        context.target.statuses.pending_discards += 1
-        context.announce(
-            f"炸矛穿透：玩家{context.target_player_id}失去10点生命并随机弃1张牌"
+def _insert_explosive_spear(context, target=None):
+    # 目标为生物：炸矛的10点伤害直接打到生物身上；生物无手牌，弃牌效果无效。
+    if target is not None:
+        damage_creature(
+            context,
+            target.player_id,
+            target.card_id,
+            10,
+            threat=target.zone == "threat",
         )
-    else:
-        # 生物目标无牌可弃：穿透效果相同，仅弃牌部分自然落空。
-        context.announce(f"炸矛穿透生物：玩家{context.target_player_id}失去10点生命")
+        return
+    # 目标为玩家：失去10点生命并随机弃1张牌。
+    context.combat.lose_life(10, context.target_player_id, context.announce)
+    context.target.statuses.pending_discards += 1
+    context.announce(
+        f"炸矛穿透：玩家{context.target_player_id}失去10点生命并随机弃1张牌"
+    )
 
 
-def _insert_electric_spear(context, creature_hit=False):
+def _insert_electric_spear(context, target=None):
+    # 目标为生物：电矛挂载到生物身上降低其后续攻击伤害，不再进入玩家手牌。
+    creature = _creature_from_target(context, target)
+    if creature is not None:
+        creature.electric_weakness += 2
+        context.announce(
+            f"电矛插入{SLUGCAT_SPECS_BY_ID[creature.card_id].name}，"
+            f"其后续攻击伤害降低{creature.electric_weakness}"
+        )
+        return
+    # 目标为玩家：电矛作为实体卡插入玩家手牌，并在其后续回合降低力量。
     context.target.statuses.embedded_electric_spears += 1
     context.target.statuses.inserted_cards.append(
         InsertedCardState(50, context.source_player_id)

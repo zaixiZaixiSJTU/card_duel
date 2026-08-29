@@ -18,7 +18,7 @@ from card_duel.cards.slugcat.specs import (
     SLUGCAT_NO_DISCARD_IDS,
     SLUGCAT_SPECS_BY_ID,
 )
-from card_duel.core.rules import add_card_to_hand, reshuffle_discard_into_draw
+from card_duel.core.rules import add_card_to_hand
 from card_duel.cards.slugcat.state import (
     MAX_SATIETY,
     SLUGCAT_HEALTH,
@@ -49,22 +49,23 @@ class SlugcatRules:
                 if has_form(data, 38):
                     previous_energy = max(0, data.chaotic_last_energy)
                     data.momentum += previous_energy * 2
-                    if context.game_state.hand_cards:
-                        context.game_state.discard_pile.append(
-                            context.game_state.hand_cards.pop()
-                        )
-                        if not context.game_state.draw_pile:
-                            reshuffle_discard_into_draw(context.game_state)
-                        if context.game_state.draw_pile:
-                            add_card_to_hand(
-                                context.game_state,
-                                context.game_state.draw_pile.pop(0),
-                            )
-                            context.announce("混沌胃袋：弃1抽1，并获得动能")
-                        else:
-                            context.announce("混沌胃袋：弃1但无牌可抽，获得动能")
+                    state = context.game_state
+                    # 混沌胃袋"弃1抽1"：由玩家选择弃1张（非随机）。排除生物/
+                    # 插入卡（管虫26、插入卡49/50不可弃）。有可弃卡时设
+                    # forced_discards=1，回合暂停在 TURN_START，由玩家通过红框
+                    # 弃牌交互完成；弃满后 gameplay._resume_chaotic_stomach
+                    # 补抽1张并继续 DRAW/PLAY。无可弃卡时跳过弃/抽。
+                    from card_duel.application.turns import can_discard
+
+                    has_discardable = any(
+                        can_discard(state, context.player_id, card_id)
+                        for card_id in state.hand_cards
+                    )
+                    if has_discardable:
+                        player.statuses.forced_discards = 1
+                        context.announce("混沌胃袋：获得动能，需选择1张弃置（弃后抽1）")
                     else:
-                        context.announce("混沌胃袋：无牌可弃/抽，获得动能")
+                        context.announce("混沌胃袋：无牌可弃，获得动能")
                 data.chaotic_last_energy = player.energy
                 if has_form(data, 55):
                     add_card_to_hand(context.game_state, 61)
@@ -196,11 +197,19 @@ class SlugcatRules:
 
 
 def resolve_pending_discards(
-    state, player_id: int, announce=None, on_discard=None
+    state, player_id: int, announce=None, on_discard=None, *, count=None
 ) -> int:
-    """Resolve explosive-spear discards immediately on the affected endpoint."""
+    """Resolve explosive-spear discards immediately on the affected endpoint.
+
+    count=None（默认）按玩家 pending_discards 字段弃牌并写回剩余值；
+    传入正整数则按该数量弃牌且不改动玩家 pending_discards 字段
+    （供混沌胃袋等"强制弃N张"效果复用，避免污染玩家真实弃牌状态）。
+    """
     player = state.players[player_id]
-    pending = player.statuses.pending_discards
+    if count is None:
+        pending = player.statuses.pending_discards
+    else:
+        pending = count
     discarded = 0
     while pending > 0 and state.hand_cards:
         protected = (
@@ -232,7 +241,8 @@ def resolve_pending_discards(
                     state.character_ids[player_id], card_id
                 ).name
             announce(f"随机弃掉：{name}")
-    player.statuses.pending_discards = pending
+    if count is None:
+        player.statuses.pending_discards = pending
     return discarded
 
 
@@ -334,6 +344,22 @@ def _resolve_creatures(context, combat) -> None:
             creature, centipede_count, player_id, context.announce
         )
         if damage:
+            # 生物身上的钢筋流血：每根钢筋让生物攻击其所有者时额外造成2点伤害。
+            bleed = creature.embedded_steel_rods * 2
+            if bleed:
+                damage += bleed
+                context.announce(
+                    f"{SLUGCAT_SPECS_BY_ID[creature.card_id].name}因钢筋流血"
+                    f"额外造成{bleed}点伤害"
+                )
+            # 生物身上的电矛：降低该生物本次攻击伤害（与玩家身上的电矛独立）。
+            if creature.electric_weakness > 0:
+                reduced = min(damage, creature.electric_weakness)
+                damage -= reduced
+                context.announce(
+                    f"{SLUGCAT_SPECS_BY_ID[creature.card_id].name}受电矛影响"
+                    f"攻击-{reduced}"
+                )
             electric = player.statuses.embedded_electric_spears * 2
             if electric:
                 damage = max(0, damage - electric)

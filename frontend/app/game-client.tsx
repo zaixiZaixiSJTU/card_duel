@@ -24,12 +24,37 @@ type RoomPlayer = {
   player_id: number;
   character_id: number | null;
   ready: boolean;
+  team_id?: number | null;
+  display_name?: string;
   deck_counts?: Record<string, Record<string, number>>;
 };
+// 多人扩展：seats 覆盖所有座位（含空座位），方便渲染选座位 UI。
+type RoomSeat =
+  | { seat_id: number; occupied: false }
+  | {
+      seat_id: number;
+      occupied: true;
+      player_id: number;
+      display_name: string;
+      is_host?: boolean;
+      character_id: number | null;
+      ready: boolean;
+      team_id?: number | null;
+      deck_counts?: Record<string, Record<string, number>>;
+    };
 type RoomView = {
   room_code: string;
   status: string;
-  settings: { first_player: string; seed: number | null; round1_no_damage: boolean };
+  seat_capacity?: number;
+  host_seat?: number | null;
+  seats?: RoomSeat[];
+  settings: {
+    first_player: string;
+    first_seat?: number | null;
+    random_seat_order?: boolean;
+    seed: number | null;
+    round1_no_damage: boolean;
+  };
   players: RoomPlayer[];
   characters: CharacterOption[];
   catalogs?: Record<string, CardDefinition[]>;
@@ -61,6 +86,10 @@ type PublicPlayer = {
   strength: number;
   poison: number;
   defence: number;
+  is_alive?: boolean;
+  team_id?: number | null;
+  display_name?: string;
+  seat_id?: number;
   statuses: {
     hand_creatures: Creature[];
     creature_threats: Creature[];
@@ -69,11 +98,21 @@ type PublicPlayer = {
   character_data: Record<string, unknown> | null;
 };
 
+// 多人扩展：others 列表用于 3+ 人渲染除自己外所有玩家牌区计数。
+type OtherPlayer = {
+  player_id: number;
+  hand_count: number;
+  draw_count: number;
+  discard_count: number;
+};
+
 type MatchView = {
   room_code: string;
   revision: number;
   player_id: number;
   character_ids: Record<string, number>;
+  player_teams?: Record<string, number | null>;
+  turn_order?: number[];
   players: Record<string, PublicPlayer>;
   card_catalogs?: Record<string, CardDefinition[]>;
   random_seed: number;
@@ -94,9 +133,30 @@ type MatchView = {
     effective_hand_size?: number;
     draw_count: number;
     discard_count: number;
+    forced_discards?: number;
   };
+  // 兼容字段：2 人时即对手；3+ 人时仅返回轮转中下一个对手。
   opponent: { hand_count: number; draw_count: number; discard_count: number };
+  // 多人扩展：除自己外所有玩家牌区计数。
+  others?: OtherPlayer[];
 };
+
+// 多人扩展：阵营颜色映射，team_id -> CSS 类名 + 显示名。
+// null 表示 FFA（自由阵营，互为敌方）。所有玩家共用同一份映射。
+const TEAM_COLORS: Array<{ id: number; label: string; className: string }> = [
+  { id: 0, label: "红", className: "team-red" },
+  { id: 1, label: "蓝", className: "team-blue" },
+  { id: 2, label: "绿", className: "team-green" },
+  { id: 3, label: "黄", className: "team-yellow" },
+  { id: 4, label: "紫", className: "team-purple" },
+  { id: 5, label: "橙", className: "team-orange" },
+];
+
+// 多人扩展：根据 team_id 取 CSS 类名（局内信息栏边框、座位高亮用）。
+function teamClassFor(teamId: number | null | undefined): string {
+  if (teamId === null || teamId === undefined) return "team-ffa";
+  return TEAM_COLORS.find((item) => item.id === teamId)?.className ?? "team-ffa";
+}
 
 type ChoicePrompt = {
   kind: "integer" | "option" | "card_indexes";
@@ -182,12 +242,18 @@ function defaultEndpoint() {
 export function GameClient() {
   const socketRef = useRef<WebSocket | null>(null);
   const logCounter = useRef(0);
+  // 玩家名称解析用 ref：socket.onmessage 只在 connect 时绑定一次，后续 render
+  // 产生的新闭包不会重新接线，因此必须用 ref 读取最新的 match/room 名称映射。
+  const matchRef = useRef<MatchView | null>(null);
+  const roomRef = useRef<RoomView | null>(null);
   const [endpoint, setEndpoint] = useState(defaultEndpoint);
   const [connection, setConnection] = useState<ConnectionStatus>("idle");
   const [playerId, setPlayerId] = useState<number | null>(null);
   const [room, setRoom] = useState<RoomView | null>(null);
   const [match, setMatch] = useState<MatchView | null>(null);
   const [joinCode, setJoinCode] = useState("");
+  // 玩家名称：进房间前在入口编辑，localStorage 持久，create_room/join_room 带上。
+  const [playerName, setPlayerName] = useState("");
   const [chatText, setChatText] = useState("");
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
@@ -196,10 +262,37 @@ export function GameClient() {
   const [choiceValue, setChoiceValue] = useState<number | string | null>(null);
   const [selectedIndexes, setSelectedIndexes] = useState<number[]>([]);
   const [firstPlayer, setFirstPlayer] = useState("random");
+  // 多人扩展：随机座位顺序开关（替代旧 host/guest/random 三选一）。
+  const [randomSeatOrder, setRandomSeatOrder] = useState(false);
   const [seed, setSeed] = useState("");
   const [roundOneSafe, setRoundOneSafe] = useState(true);
   const [layout, setLayout] = useState(DEFAULT_LAYOUT_SETTINGS);
   const [interaction, setInteraction] = useState(DEFAULT_INTERACTION_SETTINGS);
+
+  useEffect(() => {
+    matchRef.current = match;
+  }, [match]);
+  useEffect(() => {
+    roomRef.current = room;
+  }, [room]);
+
+  // 玩家名称解析：把"玩家{数字}"替换为该玩家的展示名（display_name）。
+  // 这样无需改动后端上百条 announce 字符串，前端一处即可全局显示玩家名称。
+  const playerNameOf = (id: number | string): string => {
+    const key = String(id);
+    const inMatch = matchRef.current?.players?.[key]?.display_name;
+    if (inMatch) return inMatch;
+    const inRoom = roomRef.current?.players?.find(
+      (p) => String(p.player_id) === key,
+    )?.display_name;
+    if (inRoom) return inRoom;
+    return `玩家${key}`;
+  };
+  const resolvePlayerNames = (text: string): string =>
+    text.replace(/玩家(\d+)/g, (m, id) => {
+      const name = playerNameOf(id);
+      return name === `玩家${id}` ? m : name;
+    });
 
   useEffect(() => {
     try {
@@ -214,13 +307,17 @@ export function GameClient() {
         }
       }
       const savedInteraction = localStorage.getItem("cardDuel.interaction");
-      const nextInteraction = savedInteraction ? { ...DEFAULT_INTERACTION_SETTINGS, ...JSON.parse(savedInteraction) } : null;
-      if (nextLayout || nextInteraction) {
-        window.setTimeout(() => {
-          if (nextLayout) setLayout(nextLayout);
-          if (nextInteraction) setInteraction(nextInteraction);
-        }, 0);
-      }
+        const nextInteraction = savedInteraction ? { ...DEFAULT_INTERACTION_SETTINGS, ...JSON.parse(savedInteraction) } : null;
+        if (nextLayout || nextInteraction) {
+          window.setTimeout(() => {
+            if (nextLayout) setLayout(nextLayout);
+            if (nextInteraction) setInteraction(nextInteraction);
+          }, 0);
+        }
+        const savedName = localStorage.getItem("cardDuel.playerName");
+        if (savedName) {
+          window.setTimeout(() => setPlayerName(savedName), 0);
+        }
     } catch {
       localStorage.removeItem("cardDuel.layout");
       localStorage.removeItem("cardDuel.interaction");
@@ -234,6 +331,13 @@ export function GameClient() {
       { id: ++logCounter.current, tone, text },
     ]);
   };
+
+  // 玩家名称持久化：入口编辑后写入 localStorage，下次进入自动恢复。
+  useEffect(() => {
+    if (playerName) {
+      localStorage.setItem("cardDuel.playerName", playerName);
+    }
+  }, [playerName]);
 
   const send = (action: string, data: Record<string, unknown> = {}) => {
     const socket = socketRef.current;
@@ -271,15 +375,28 @@ export function GameClient() {
       case "room_state": {
         const nextRoom = data.room as RoomView;
         setRoom(nextRoom);
+        // 同步 ref（与下面 match 同理）：onmessage 只绑定一次，setRoom 触发的
+        // useEffect 要等渲染后才回写 ref，期间若紧接着来 announcement/chat，
+        // resolvePlayerNames 会读到旧名。这里在收到消息当下立即写 ref，避免空窗。
+        roomRef.current = nextRoom;
+        // 同步本地 playerId：房主/玩家换座后后端会推送新的 your_player_id，
+        // 前端必须跟随更新，否则 isHost/isMine 判断会脱节。
+        if (data.your_player_id !== undefined && data.your_player_id !== null) {
+          setPlayerId(Number(data.your_player_id));
+        }
         setMatch(null);
+        matchRef.current = null;
         setFirstPlayer(nextRoom.settings.first_player);
+        setRandomSeatOrder(Boolean(nextRoom.settings.random_seat_order));
         setSeed(nextRoom.settings.seed === null ? "" : String(nextRoom.settings.seed));
         setRoundOneSafe(nextRoom.settings.round1_no_damage);
         break;
       }
       case "match_started":
         setMatch(data.state as MatchView);
+        matchRef.current = data.state as MatchView;
         setRoom(null);
+        roomRef.current = null;
         setChoice(null);
         if (!(data.state as MatchView).card_catalogs) {
           setNotice("后端进程尚未提供卡牌目录；请重启 card-duel-web 以显示完整卡面");
@@ -289,6 +406,7 @@ export function GameClient() {
       case "state": {
         const nextMatch = data.state as MatchView;
         setMatch(nextMatch);
+        matchRef.current = nextMatch;
         if (!nextMatch.pending_choice) {
           setChoice(null);
           setSelectedIndexes([]);
@@ -296,13 +414,17 @@ export function GameClient() {
         break;
       }
       case "chat":
-        addLog(`玩家${data.player_id}：${data.message}`, "chat");
+        addLog(`${playerNameOf(String(data.player_id))}：${data.message}`, "chat");
         break;
-      case "announcement":
-        addLog(String(data.message), logTone(String(data.message)));
+      case "announcement": {
+        // logTone 仍按原文判断语气（关键词不受"玩家{数字}"替换影响），
+        // 显示文本经 resolvePlayerNames 把"玩家{n}"替换为展示名。
+        const rawAnnounce = String(data.message);
+        addLog(resolvePlayerNames(rawAnnounce), logTone(rawAnnounce));
         break;
+      }
       case "private_announcement":
-        addLog(String(data.message), "private");
+        addLog(resolvePlayerNames(String(data.message)), "private");
         break;
       case "card_played":
         setLastPlayed({ character_id: Number(data.character_id), card_id: Number(data.card_id) });
@@ -384,12 +506,36 @@ export function GameClient() {
       setNotice("随机种子必须是整数");
       return;
     }
+    // 多人扩展：发送 first_seat=null + random_seat_order 替代旧 host/guest/random。
+    // first_player 仍传 "random" 以兼容旧后端，但前端不再用其值。
     send("configure_room", {
-      first_player: firstPlayer,
+      first_player: "random",
+      first_seat: null,
+      random_seat_order: randomSeatOrder,
       seed: numericSeed,
       round1_no_damage: roundOneSafe,
     });
   };
+
+  // 多人扩展：房主加座位（最多 8 个）。
+  const addSeat = () => send("add_seat");
+  // 多人扩展：房主移除一个空座位。
+  const removeSeat = (seatId: number) => send("remove_seat", { seat: seatId });
+  // 多人扩展：房主随机重排座位。
+  const shuffleSeats = () => send("shuffle_seats");
+  // 多人扩展：玩家选择一个空座位坐下，或在已入房后换座。
+  const pickSeat = (seatId: number) => send("pick_seat", { seat: seatId });
+  // 多人扩展：玩家选择自己的阵营颜色（红/蓝/绿/黄/紫/橙），null=FFA。
+  const setTeam = (teamId: number | null) =>
+    send("set_team", { team_id: teamId });
+  // 多人扩展：玩家设置自己的展示名称，方便在座位上辨识。
+  const setName = (name: string) => send("set_name", { display_name: name });
+  // 多人扩展：房主强制交换两个已占用座位的玩家。
+  const swapSeats = (seatA: number, seatB: number) =>
+    send("swap_seats", { seat_a: seatA, seat_b: seatB });
+  // 多人扩展：房主把某玩家强制迁移到空座位。
+  const movePlayer = (fromSeat: number, toSeat: number) =>
+    send("move_player", { from_seat: fromSeat, to_seat: toSeat });
 
   const resolveChoice = (value: unknown) => {
     if (!choice) return;
@@ -441,11 +587,21 @@ export function GameClient() {
         send={send}
         firstPlayer={firstPlayer}
         setFirstPlayer={setFirstPlayer}
+        randomSeatOrder={randomSeatOrder}
+        setRandomSeatOrder={setRandomSeatOrder}
         seed={seed}
         setSeed={setSeed}
         roundOneSafe={roundOneSafe}
         setRoundOneSafe={setRoundOneSafe}
         configureRoom={configureRoom}
+        addSeat={addSeat}
+        removeSeat={removeSeat}
+        shuffleSeats={shuffleSeats}
+        pickSeat={pickSeat}
+        setTeam={setTeam}
+        setName={setName}
+        swapSeats={swapSeats}
+        movePlayer={movePlayer}
       >
         <AnimatePresence>{notice && <Notice message={notice} close={() => setNotice(null)} />}</AnimatePresence>
       </LobbyScreen>
@@ -469,6 +625,17 @@ export function GameClient() {
 
         <aside className="connect-panel">
           <div className="panel-heading"><span>连接牌桌</span><b>01</b></div>
+          <label htmlFor="player-name-input">你的名称</label>
+          <div className="endpoint-field name-field">
+            <span>ID</span>
+            <input
+              id="player-name-input"
+              value={playerName}
+              maxLength={20}
+              placeholder="进入房间前先设个名字"
+              onChange={(event) => setPlayerName(event.target.value)}
+            />
+          </div>
           <label htmlFor="server-url">服务器地址</label>
           <div className="endpoint-field">
             <span>WS</span>
@@ -482,13 +649,13 @@ export function GameClient() {
             <>
               <div className="connected-strip"><i /> 已连接，选择进入方式</div>
               <div className="mode-row">
-                <button type="button" className="mode-card" onClick={() => send("create_room")}>
+                <button type="button" className="mode-card" onClick={() => send("create_room", { display_name: playerName.trim() })}>
                   <small>HOST</small><strong>创建房间</strong><span>生成 6 位房间号</span>
                 </button>
                 <div className="mode-card join-card">
                   <small>JOIN</small><strong>加入对局</strong>
                   <div><input aria-label="房间号" maxLength={6} placeholder="000000" value={joinCode} onChange={(event) => setJoinCode(event.target.value.replace(/\D/g, ""))} />
-                  <button type="button" onClick={() => send("join_room", { room_code: joinCode })}>→</button></div>
+                  <button type="button" onClick={() => send("join_room", { room_code: joinCode, display_name: playerName.trim() })}>→</button></div>
                 </div>
               </div>
             </>
@@ -525,13 +692,39 @@ function LobbyScreen(props: {
   setChatText: (value: string) => void; submitChat: (event: FormEvent) => void;
   send: (action: string, data?: Record<string, unknown>) => void;
   firstPlayer: string; setFirstPlayer: (value: string) => void;
+  randomSeatOrder: boolean; setRandomSeatOrder: (value: boolean) => void;
   seed: string; setSeed: (value: string) => void; roundOneSafe: boolean;
   setRoundOneSafe: (value: boolean) => void; configureRoom: () => void;
+  addSeat: () => void; removeSeat: (seatId: number) => void;
+  shuffleSeats: () => void; pickSeat: (seatId: number) => void;
+  setTeam: (teamId: number | null) => void;
+  setName: (name: string) => void;
+  swapSeats: (seatA: number, seatB: number) => void;
+  movePlayer: (fromSeat: number, toSeat: number) => void;
   children: ReactNode;
 }) {
   const { room, playerId, send } = props;
   const local = room.players.find((player) => player.player_id === playerId);
-  const isHost = playerId === 1;
+  // 房主身份跟随 client_id（后端 host_seat 是房主当前所在座位号）。
+  // 房主换座位后 host_seat 更新，权限不丢。
+  const isHost = playerId === (room.host_seat ?? 1);
+  // 房主座位调整模式：null=未激活，"swap"=选第二个交换座位，"move"=选目标空座位。
+  // 激活后记住第一个座位，点击下一个座位完成操作。
+  const [seatOpMode, setSeatOpMode] = useState<null | "swap" | "move">(null);
+  const [seatOpSource, setSeatOpSource] = useState<number | null>(null);
+  // 名称输入：本地草稿缓冲，回车或失焦时发送 set_name。
+  const [nameDraft, setNameDraft] = useState(local?.display_name ?? "");
+  useEffect(() => {
+    setNameDraft(local?.display_name ?? "");
+  }, [local?.display_name]);
+  const submitName = () => {
+    const trimmed = nameDraft.trim();
+    if (trimmed && trimmed !== local?.display_name) {
+      props.setName(trimmed);
+    } else if (!trimmed) {
+      setNameDraft(local?.display_name ?? "");
+    }
+  };
   const [deckEditorOpen, setDeckEditorOpen] = useState(false);
   const [deckEditorCharacter, setDeckEditorCharacter] = useState<number | null>(null);
   const [deckCounts, setDeckCounts] = useState<Record<number, Record<number, number>>>({});
@@ -656,19 +849,127 @@ function LobbyScreen(props: {
           </div>
 
           <div className="player-slots">
-            {[1, 2].map((id) => {
-              const player = room.players.find((item) => item.player_id === id);
-              const character = room.characters.find((item) => item.character_id === player?.character_id);
-              return <div className={`player-slot ${player?.ready ? "ready" : ""}`} key={id}><span>玩家 {id} · {id === 1 ? "房主" : "客机"}</span><strong>{player ? character?.name ?? "未选择角色" : "等待加入…"}</strong><i>{player?.ready ? "READY" : player ? "NOT READY" : "EMPTY"}</i></div>;
+            {/* 多人扩展：渲染所有座位（含空座位），玩家可点选空座位坐下，
+                已入房后可点击其他空座位换座；房主可移除空座位、强制交换两座位、
+                强制迁移玩家到空座位。每个已就座玩家可点击色块切换阵营颜色。 */}
+            {seatOpMode && seatOpSource !== null && (
+              <div className="seat-op-hint" role="status">
+                {seatOpMode === "swap"
+                  ? `交换模式：点击另一个已占用座位完成交换（源：座位 ${seatOpSource}）`
+                  : `迁移模式：点击一个空座位作为目标（源：座位 ${seatOpSource}）`}
+                <button type="button" className="ghost-action" onClick={() => { setSeatOpMode(null); setSeatOpSource(null); }}>取消</button>
+              </div>
+            )}
+            {(room.seats ?? Array.from({ length: room.seat_capacity ?? 2 }, (_, index) => ({ seat_id: index + 1, occupied: false }))).map((seat) => {
+              const isMine = seat.occupied && seat.player_id === playerId;
+              const seatIsHost = seat.occupied && seat.is_host;
+              const seatCharacterId = seat.occupied ? seat.character_id : null;
+              const character = room.characters.find((item) => item.character_id === seatCharacterId);
+              const seatTeamClass = seat.occupied ? teamClassFor(seat.team_id) : "";
+              // 房主座位调整模式激活时，点击座位卡片完成操作。
+              const handleSeatCardClick = () => {
+                if (!isHost || seatOpMode === null || seatOpSource === null) return;
+                if (seatOpMode === "swap") {
+                  if (seat.occupied && seat.seat_id !== seatOpSource) {
+                    props.swapSeats(seatOpSource, seat.seat_id);
+                  }
+                } else if (seatOpMode === "move") {
+                  if (!seat.occupied) {
+                    props.movePlayer(seatOpSource, seat.seat_id);
+                  }
+                }
+                setSeatOpMode(null);
+                setSeatOpSource(null);
+              };
+              const interactiveMode = isHost && seatOpMode !== null && seatOpSource !== null;
+              if (!seat.occupied) {
+                return (
+                  <div
+                    className={`player-slot seat-empty ${interactiveMode && seatOpMode === "move" ? "seat-target" : ""} ${interactiveMode ? "seat-interactive" : ""}`}
+                    key={seat.seat_id}
+                    onClick={handleSeatCardClick}
+                    role={interactiveMode ? "button" : undefined}
+                  >
+                    <span>座位 {seat.seat_id} · 空位</span>
+                    {!interactiveMode && (
+                      <button type="button" className="seat-pick" onClick={(event) => { event.stopPropagation(); props.pickSeat(seat.seat_id); }}>选此座位</button>
+                    )}
+                    {isHost && !interactiveMode && (room.seat_capacity ?? 2) > 2 && (
+                      <button type="button" className="seat-remove" onClick={(event) => { event.stopPropagation(); props.removeSeat(seat.seat_id); }}>移除座位</button>
+                    )}
+                    <i>{interactiveMode && seatOpMode === "move" ? "点此迁移" : "EMPTY"}</i>
+                  </div>
+                );
+              }
+              return (
+                <div
+                  className={`player-slot ${seatTeamClass} ${seat.ready ? "ready" : ""} ${isMine ? "mine" : ""} ${seatIsHost ? "host-seat" : ""} ${interactiveMode && seatOpMode === "swap" && seat.seat_id !== seatOpSource ? "seat-target" : ""} ${interactiveMode ? "seat-interactive" : ""}`}
+                  key={seat.seat_id}
+                  onClick={handleSeatCardClick}
+                  role={interactiveMode ? "button" : undefined}
+                >
+                  {seatIsHost && <i className="host-badge">房主</i>}
+                  <span>座位 {seat.seat_id}{isMine ? " · 你" : ""}</span>
+                  <strong className="seat-display-name">{seat.display_name || `玩家${seat.seat_id}`}</strong>
+                  <small className="seat-character-name">{character?.name ?? "未选择角色"}</small>
+                  {isMine && !local?.ready && (
+                    <div className="team-picker" role="group" aria-label="选择阵营颜色">
+                      {TEAM_COLORS.map((color) => (
+                        <button
+                          key={color.id}
+                          type="button"
+                          aria-label={`选择${color.label}阵营`}
+                          className={`team-swatch ${color.className} ${seat.team_id === color.id ? "active" : ""}`}
+                          onClick={(event) => { event.stopPropagation(); props.setTeam(color.id); }}
+                        />
+                      ))}
+                      <button
+                        type="button"
+                        aria-label="自由阵营 FFA"
+                        className={`team-swatch team-ffa ${seat.team_id === null || seat.team_id === undefined ? "active" : ""}`}
+                        onClick={(event) => { event.stopPropagation(); props.setTeam(null); }}
+                      />
+                    </div>
+                  )}
+                  {/* 房主对其他已占用座位（非自己）的操作按钮 */}
+                  {isHost && !isMine && !interactiveMode && (
+                    <div className="seat-host-actions">
+                      <button type="button" className="seat-op-btn" title="与另一个座位交换" onClick={(event) => { event.stopPropagation(); setSeatOpMode("swap"); setSeatOpSource(seat.seat_id); }}>交换</button>
+                      <button type="button" className="seat-op-btn" title="迁移到空座位" onClick={(event) => { event.stopPropagation(); setSeatOpMode("move"); setSeatOpSource(seat.seat_id); }}>迁移</button>
+                    </div>
+                  )}
+                  <i>{seat.ready ? "READY" : "NOT READY"}</i>
+                </div>
+              );
             })}
+            {isHost && (room.seat_capacity ?? 2) < 8 && (
+              <button type="button" className="player-slot seat-add" onClick={props.addSeat}>+ 加座位</button>
+            )}
           </div>
         </div>
 
         <aside className="lobby-sidebar">
           <div className="rules-panel">
             <div className="panel-heading"><span>房间规则</span><b>02</b></div>
-            <span className="rule-label">先手方</span>
-            <div className="segmented">{[["host", "房主"], ["guest", "客机"], ["random", "随机"]].map(([value, label]) => <button key={value} type="button" disabled={!isHost} className={props.firstPlayer === value ? "active" : ""} onClick={() => props.setFirstPlayer(value)}>{label}</button>)}</div>
+            {/* 多人扩展：原"先手方 host/guest/random"三选一改为"开局时随机
+                座位顺序"开关；房主可立即"随机重排"当前座位号。 */}
+            <div className="toggle-row">
+              <label htmlFor="random-seat-order">
+                <strong>开局时随机座位顺序</strong>
+                <small>开启后，开局时按种子打乱座位号再确定先手</small>
+              </label>
+              <input
+                id="random-seat-order"
+                aria-label="开局时随机座位顺序"
+                type="checkbox"
+                disabled={!isHost}
+                checked={props.randomSeatOrder}
+                onChange={(event) => props.setRandomSeatOrder(event.target.checked)}
+              />
+            </div>
+            {isHost && (
+              <button type="button" className="secondary-action" onClick={props.shuffleSeats}>立即随机重排座位</button>
+            )}
             <label htmlFor="match-seed">随机种子</label>
             <input id="match-seed" className="rule-input" disabled={!isHost} placeholder="留空则随机" value={props.seed} onChange={(event) => props.setSeed(event.target.value)} />
             <div className="toggle-row"><label htmlFor="round-one-safe"><strong>首回合无伤</strong><small>先手第一回合无法扣除对方生命</small></label><input id="round-one-safe" aria-label="首回合无伤" type="checkbox" disabled={!isHost} checked={props.roundOneSafe} onChange={(event) => props.setRoundOneSafe(event.target.checked)} /></div>
@@ -679,6 +980,22 @@ function LobbyScreen(props: {
       </section>
       <div className="lobby-ready-bar">
         <div className="lobby-ready-left">
+          <label className="name-input-row" htmlFor="player-name">
+            <span className="name-label">名称</span>
+            <input
+              id="player-name"
+              className="name-input"
+              type="text"
+              maxLength={20}
+              placeholder={`玩家${playerId}`}
+              value={nameDraft}
+              disabled={!!local?.ready}
+              title={local?.ready ? "已准备，请先取消准备再改名" : "设置你在座位上显示的名字"}
+              onChange={(event) => setNameDraft(event.target.value)}
+              onBlur={submitName}
+              onKeyDown={(event) => { if (event.key === "Enter") { (event.target as HTMLInputElement).blur(); } }}
+            />
+          </label>
           <p>{local?.character_id ? `已选择 ${room.characters.find((item) => item.character_id === local.character_id)?.name}` : "请先选择角色"}</p>
           <button type="button" className="deck-builder-toggle" disabled={!!local?.ready} title={local?.ready ? "已准备，请先取消准备" : undefined} onClick={() => { setDeckEditorCharacter(local?.character_id ?? 1); setDeckEditorOpen(true); }}>构建牌组</button>
         </div>
@@ -787,7 +1104,9 @@ function MatchScreen(props: {
     }, 0);
   }, [match.revision, match.active_player_id]);
   const me = match.players[String(match.player_id)];
-  const opponentId = match.player_id === 1 ? 2 : 1;
+  const opponentId =
+    match.turn_order?.find((id) => id !== match.player_id) ??
+    (match.player_id === 1 ? 2 : 1);
   const opponent = match.players[String(opponentId)];
   const myCharacter = match.character_ids[String(match.player_id)];
   const opponentCharacter = match.character_ids[String(opponentId)];
@@ -795,7 +1114,11 @@ function MatchScreen(props: {
   const inPlay = match.current_phase === "出牌阶段";
   const inDiscard = match.current_phase === "弃牌阶段";
   const draftIsCurrent = discardDraft.revision === match.revision && discardDraft.activePlayerId === match.active_player_id;
-  const discardMode = draftIsCurrent && discardDraft.mode;
+  const manualDiscardMode = draftIsCurrent && discardDraft.mode;
+  // 强制选择弃牌（混沌胃袋/手牌超限）：后端 forced_discards>0 时自动进入
+  // 红框弃牌，与手动"进入弃牌"按钮表现一致，无需玩家手动切换。
+  const forcedDiscard = myTurn && (match.you.forced_discards ?? 0) > 0;
+  const discardMode = manualDiscardMode || forcedDiscard;
   const discardSelection = draftIsCurrent ? discardDraft.indexes : [];
   const selectingDiscard = discardMode;
   const effectiveHandSize = match.you.effective_hand_size ?? match.you.hand_cards.length;
@@ -1007,7 +1330,7 @@ function MatchScreen(props: {
         window.clearTimeout(playTimerRef.current);
         playTimerRef.current = null;
         setActiveDiscardTarget(null);
-        setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: discardMode, indexes: [] });
+        setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: manualDiscardMode, indexes: [] });
         props.send("discard_card", { index });
         return;
       }
@@ -1031,7 +1354,7 @@ function MatchScreen(props: {
     if (pending && pending.index === index) {
       playTimerRef.current = null;
       setActiveDiscardTarget(null);
-      setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: discardMode, indexes: [] });
+      setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: manualDiscardMode, indexes: [] });
       props.send("discard_card", { index });
     }
   };
@@ -1077,10 +1400,42 @@ function MatchScreen(props: {
 
   return (
     <main className="match-shell" style={styleVariables}>
+      {match.game_over && (() => {
+        // 严谨结算：按 is_alive 统计存活阵营。只剩一个阵营 → 该阵营胜；
+        // FFA（team_id 为 null）时每个玩家独立成阵营，只剩一人即胜。
+        const aliveEntries = Object.entries(match.players).filter(
+          ([, p]) => p.is_alive !== false && p.health > 0,
+        );
+        const aliveTeams = new Set(
+          aliveEntries.map(([, p]) => (p.team_id === undefined ? null : p.team_id)),
+        );
+        let resultText: string;
+        if (aliveTeams.size === 1) {
+          const teamId = [...aliveTeams][0];
+          if (teamId === null) {
+            const ffaWinner = aliveEntries[0]?.[1];
+            resultText = `${ffaWinner?.display_name || `玩家 ${aliveEntries[0]?.[0] ?? ""}`} 胜利`;
+          } else {
+            const color = TEAM_COLORS.find((c) => c.id === teamId);
+            resultText = `${color?.label ?? `阵营 ${teamId}`} 阵营胜利`;
+          }
+        } else {
+          resultText = "对局结束";
+        }
+        return (
+          <div className="game-over-overlay">
+            <div className="game-over-card">
+              <h2>对局结束</h2>
+              <p>{resultText}</p>
+              <button type="button" className="return-room-button" onClick={() => props.send("return_to_room", {})}>回到房间</button>
+            </div>
+          </div>
+        );
+      })()}
       <header className="match-topbar"><Brand connection={props.connection} compact /><div className="turn-track">{phases.map((phase, index) => <div key={phase} className={`${index === currentPhase ? "active" : ""} ${index < currentPhase ? "done" : ""}`}><span>{index + 1}</span><GameTooltip className="phase-name" explanation={phaseExplanation(phase)}><b>{phase}</b></GameTooltip></div>)}</div><GameTooltip className="round-tooltip" explanation={{ title: "轮次", description: "双方各完成一个回合后，轮次增加。新轮次会重新分配双方能量。" }}><span className="round-chip"><small>ROUND</small><strong>{String(match.round_number).padStart(2, "0")}</strong></span></GameTooltip></header>
 
       <section className="opponent-zone layout-region" data-region="opponentStatus" style={{ transform: `translate(${regionOffsets.opponentStatus.x}px, ${regionOffsets.opponentStatus.y}px)` }} onPointerDown={(event) => startRegionDrag(event, "opponentStatus")}>
-        <PlayerStatus label={`玩家 ${opponentId}`} character={opponentCharacter} player={opponent} active={match.active_player_id === opponentId} />
+        <PlayerStatus label={opponent?.display_name || `玩家 ${opponentId}`} character={opponentCharacter} player={opponent} active={match.active_player_id === opponentId} teamClass={teamClassFor(opponent?.team_id)} />
       </section>
 
       <section className="battlefield">
@@ -1102,7 +1457,7 @@ function MatchScreen(props: {
             transition={{ duration: 2, times: [0, 0.15, 0.85, 1], ease: "easeInOut" }}
           >
             <div className="turn-banner-content">
-              <i /><span>{myTurn ? "你的回合" : `玩家 ${opponentId} 行动中`}</span><i />
+              <i /><span>{myTurn ? "你的回合" : `${opponent?.display_name || `玩家 ${opponentId}`} 行动中`}</span><i />
             </div>
             <small>{match.current_phase}</small>
           </motion.div>
@@ -1111,7 +1466,7 @@ function MatchScreen(props: {
 
       <section className="player-zone">
         <div className="layout-region own-status-region" data-region="ownStatus" style={{ transform: `translate(${regionOffsets.ownStatus.x}px, ${regionOffsets.ownStatus.y}px)` }} onPointerDown={(event) => startRegionDrag(event, "ownStatus")}>
-          <PlayerStatus label={`玩家 ${match.player_id} · 你`} character={myCharacter} player={me} active={myTurn} />
+          <PlayerStatus label={`${me?.display_name || `玩家 ${match.player_id}`} · 你`} character={myCharacter} player={me} active={myTurn} teamClass={teamClassFor(me?.team_id)} />
           <div className="layout-region status-piles" data-region="piles" style={{ transform: `translate(${regionOffsets.piles.x}px, ${regionOffsets.piles.y}px)` }} onPointerDown={(event) => startRegionDrag(event, "piles")}>
             <button type="button" className="pile-button" onClick={() => setDeckViewer("draw")}><Pile label="抽牌" count={match.you.draw_count} /></button>
             <button type="button" className="pile-button" onClick={() => setDeckViewer("discard")}><Pile label="弃牌" count={match.you.discard_count} /></button>
@@ -1217,9 +1572,9 @@ function MatchScreen(props: {
           </div>
         </div>
         <div className="log-actions layout-region" data-region="actionPanel" style={{ transform: `translate(calc(-50% + ${regionOffsets.actionPanel.x}px), calc(0px + ${regionOffsets.actionPanel.y}px))` }} onPointerDown={(event) => startRegionDrag(event, "actionPanel")}>
-          <button type="button" className={`discard-toggle ${discardMode ? "active" : ""}`} disabled={!myTurn || match.pending_choice || !inPlay} onClick={() => { setActiveDiscardTarget(null); setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: !discardMode, indexes: [] }); }}>{discardMode ? "退出弃牌" : "进入弃牌"}</button>
+          <button type="button" className={`discard-toggle ${discardMode ? "active" : ""}`} disabled={!myTurn || match.pending_choice || forcedDiscard || !inPlay} onClick={() => { setActiveDiscardTarget(null); setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: !manualDiscardMode, indexes: [] }); }}>{discardMode ? "退出弃牌" : "进入弃牌"}</button>
           <button type="button" className={`hand-view-toggle ${handView === "creatures" ? "active" : ""}`} aria-label={handView === "cards" ? "切换到手中生物" : "切换到手牌"} onClick={() => setHandView(handView === "cards" ? "creatures" : "cards")}>{handView === "cards" ? `生 ${creatures.length}` : `牌 ${match.you.hand_cards.length}`}</button>
-          <button type="button" className="turn-end" disabled={!myTurn || match.pending_choice || (!inPlay && !inDiscard) || excessCards > 0} onClick={() => { setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: false, indexes: [] }); props.send("end_turn"); }}>{excessCards > 0 ? `还需弃 ${excessCards} 张` : "结束回合"} <b>→</b></button>
+          <button type="button" className="turn-end" disabled={!myTurn || match.pending_choice || forcedDiscard || (!inPlay && !inDiscard && excessCards === 0)} onClick={() => { setDiscardDraft({ revision: match.revision, activePlayerId: match.active_player_id, mode: false, indexes: [] }); props.send("end_turn"); }}>{forcedDiscard ? "弃牌中…" : excessCards > 0 ? `还需弃 ${excessCards} 张` : "结束回合"} <b>→</b></button>
         </div>
         <div className="interface-actions">
           <button type="button" className="icon-button" aria-label="打开牌图鉴" title="牌图鉴" onClick={() => setCodexOpen(true)}>📖</button>
@@ -1316,7 +1671,7 @@ function MatchScreen(props: {
   );
 }
 
-function PlayerStatus({ label, character, player, active }: { label: string; character: number; player: PublicPlayer; active: boolean }) {
+function PlayerStatus({ label, character, player, active, teamClass }: { label: string; character: number; player: PublicPlayer; active: boolean; teamClass?: string }) {
   const name = character === 1 ? "战士" : character === 4 ? "蛞蝓猫" : `角色 ${character}`;
   const data = player.character_data ?? {};
   const maxHealth = Math.max(1, player.max_health ?? (character === 4 ? 5 : 30));
@@ -1335,7 +1690,7 @@ function PlayerStatus({ label, character, player, active }: { label: string; cha
     }));
   if (typeof data.form === "string") detail.unshift({ key: "form", value: data.form });
   return (
-    <div className={`player-status ${active ? "active" : ""}`}>
+    <div className={`player-status ${active ? "active" : ""} ${teamClass ?? ""}`}>
       <div className="player-identity">
         <div className={`avatar char-${character}`}>{character === 1 ? "战" : "猫"}</div>
         <div className="identity"><small>{label}</small><strong>{name}</strong></div>

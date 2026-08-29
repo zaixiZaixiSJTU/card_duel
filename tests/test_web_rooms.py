@@ -665,15 +665,59 @@ class RoomManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(room.state.players[1].energy, 5)
         self.assertIsNone(room.pending_action)
 
-    async def test_end_turn_rejects_hand_above_limit(self):
+    async def test_end_turn_over_limit_enters_forced_discard_then_proceeds(self):
         room = await self.start_warrior_match()
         room.card_zones[1].hand[:] = [1, 1, 1, 1, 1]
 
+        # 点击结束回合时手牌超限：不再报错，而是进入强制选择弃牌阶段（红框 UI）
         await self.manager.handle(self.host_id, {"action": "end_turn", "data": {}})
 
-        error = self.host.pop("error")
-        self.assertEqual(error["data"]["code"], "hand_limit")
+        self.assertEqual(room.state.current_phase, "弃牌阶段")
+        self.assertEqual(room.state.players[1].statuses.forced_discards, 1)
+        state = self.host.pop("state")["data"]["state"]
+        self.assertEqual(state["you"]["forced_discards"], 1)
+        self.host.clear()
+        self.guest.clear()
+
+        # 弃1张满足强制弃牌（仍停在弃牌阶段，等玩家再点结束回合）
+        await self.manager.handle(
+            self.host_id, {"action": "discard_card", "data": {"index": 0}}
+        )
+        self.assertEqual(room.state.players[1].statuses.forced_discards, 0)
+        self.assertEqual(len(room.card_zones[1].hand), 4)
+        self.assertEqual(room.state.current_phase, "弃牌阶段")
+        self.host.clear()
+        self.guest.clear()
+
+        # 再次结束回合 → 真正结束，轮转到对手
+        await self.manager.handle(self.host_id, {"action": "end_turn", "data": {}})
+        self.assertEqual(room.state.active_player_id, 2)
         self.assertEqual(room.state.current_phase, "出牌阶段")
+
+    async def test_chaos_stomach_forced_discard_then_draws_one(self):
+        from card_duel.web.gameplay import begin_turn, discard_card
+        from card_duel.cards.slugcat.state import slugcat_data
+
+        room = await self.start_warrior_match(host_character=4)
+        # 配置混沌胃袋：手牌2张可弃，抽牌堆1张用于补抽
+        slugcat_data(room.state.players[1]).form = "混沌胃袋"
+        room.card_zones[1].hand[:] = [1, 6]
+        room.card_zones[1].draw_pile[:] = [44]
+        room.card_zones[1].discard_pile.clear()
+
+        # 重新进入回合开始（模拟下个回合）：混沌胃袋设 forced_discards=1，暂停在 TURN_START
+        begin_turn(room, 1, self.manager.registry)
+        self.assertEqual(room.state.current_phase, "回合开始时")
+        self.assertEqual(room.state.players[1].statuses.forced_discards, 1)
+        self.assertEqual(room.card_zones[1].hand, [1, 6])  # 未立即弃/抽
+
+        # 玩家选择弃 index 0：forced→0，补抽1张(44)，继续 DRAW/PLAY
+        discard_card(room, 1, {"index": 0}, self.manager.registry)
+        self.assertEqual(room.state.players[1].statuses.forced_discards, 0)
+        self.assertEqual(room.state.current_phase, "出牌阶段")
+        # 弃1(手牌剩6) + 补抽1(44) + DRAW阶段抽牌 → 手牌含6和44
+        self.assertIn(6, room.card_zones[1].hand)
+        self.assertIn(44, room.card_zones[1].hand)
 
     async def test_turn_end_choice_is_resumed_before_next_player_turn(self):
         room = await self.start_warrior_match(host_character=4)

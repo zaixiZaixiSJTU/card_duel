@@ -267,6 +267,11 @@ def resolve_attack(
             on_player_penetrate(context)
         return life_loss
     context.announce(f"玩家{context.source_player_id}使用{card_name}攻击{target.label}")
+    # 先存生物引用：damage_creature 可能在生物被击杀时将其从 zone 移除，
+    # 届时 creature_ref.health <= 0，用于判断是否还要施加穿透的持续效果。
+    statuses = context.state.players[target.player_id].statuses
+    zone = statuses.creature_threats if target.zone == "threat" else statuses.hand_creatures
+    creature_ref = next((item for item in zone if item.card_id == target.card_id), None)
     dealt = damage_creature(
         context,
         target.player_id,
@@ -274,9 +279,17 @@ def resolve_attack(
         damage,
         threat=target.zone == "threat",
     )
-    # 矛类穿透效果对生物同样生效：造成伤害即视同穿透，插入/弃牌等照常触发。
-    if dealt > 0 and on_player_penetrate is not None:
-        on_player_penetrate(context, creature_hit=True)
+    # 矛类穿透效果对生物同样生效，但持续效果（钢筋流血/电矛减伤）只在生物
+    # 存活时挂载：被一击必杀的生物不会再攻击，挂上去也无意义。炸矛的额外
+    # 10伤同样仅在生物存活时才有意义。target（AttackTarget）携带 zone/player_id/
+    # card_id，penetrate 函数据此定位具体生物实例修改其字段。
+    if (
+        dealt > 0
+        and on_player_penetrate is not None
+        and creature_ref is not None
+        and creature_ref.health > 0
+    ):
+        on_player_penetrate(context, target=target)
     return 0
 
 
